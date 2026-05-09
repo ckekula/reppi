@@ -2,5 +2,12 @@
 
 from reppi.dictionary.ksvd import KSVD
 from reppi.dictionary.lc_ksvd import LCKSVD, initialization4lcksvd
+from reppi.dictionary.frozen import FrozenDictionaryLearner, IncrementalFrozenDictionary
 
-__all__ = ["KSVD", "LCKSVD", "initialization4lcksvd"]
+__all__ = [
+    "KSVD",
+    "LCKSVD",
+    "initialization4lcksvd",
+    "FrozenDictionaryLearner",
+    "IncrementalFrozenDictionary",
+]

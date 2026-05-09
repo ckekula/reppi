@@ -62,8 +62,9 @@ For LC-KSVD2::
 from __future__ import annotations
 
 import numpy as np
+from scipy import linalg
 
-from reppi.base import BaseDictionaryLearner
+from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp import OMP, batch_omp
 from reppi.sparse.src import col_norms_squared, normalize_columns, rep_error_squared
@@ -234,7 +235,7 @@ def _augment_data(
     return X_aug, alpha_scale, beta_scale
 
 
-class LCKSVD(BaseDictionaryLearner):
+class LCKSVD(BaseDiscriminativeDictionaryLearner):
     """
     Label Consistent K-SVD dictionary learner (LC-KSVD1 and LC-KSVD2).
 
@@ -305,6 +306,7 @@ class LCKSVD(BaseDictionaryLearner):
         self.W_: np.ndarray | None = None
         self.A_: np.ndarray | None = None
         self.errors_: list[float] = []
+        self.class_boundaries_: dict[int, tuple[int, int]] | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -435,6 +437,17 @@ class LCKSVD(BaseDictionaryLearner):
         self.D_ = D
         self.A_ = A
         self.W_ = W
+
+        # Record per-class atom ranges matching _build_label_consistent_target
+        n_classes = H.shape[0]
+        atoms_per_class = self.n_components // n_classes
+        boundaries: dict[int, tuple[int, int]] = {}
+        for c in range(n_classes):
+            start = c * atoms_per_class
+            end = start + atoms_per_class if c < n_classes - 1 else self.n_components
+            boundaries[c] = (start, end)
+        self.class_boundaries_ = boundaries
+
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
@@ -493,14 +506,6 @@ class LCKSVD(BaseDictionaryLearner):
         true_labels = np.argmax(H, axis=0)
         pred_labels = self.predict(X)
         return float(np.mean(pred_labels == true_labels))
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _check_fitted(self) -> None:
-        if self.D_ is None:
-            raise DictionaryLearningError("Call fit() before transform() / predict().")
 
     @staticmethod
     def _build_aug_dict(
