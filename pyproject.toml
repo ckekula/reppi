@@ -1,6 +1,7 @@
 [project]
 name = "reppi"
 version = "0.1.1"
+readme = "README.md"
 description = "A Python toolkit for representation-based learning/classification algorithms"
 requires-python = ">=3.12"
 dependencies = [
