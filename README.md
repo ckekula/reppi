@@ -98,75 +98,73 @@ predictions = model.predict(X_test)        # integer class indices
 accuracy    = model.score(X_test, H_test)  # float in [0, 1]
 ```
 
-### Supplying Your Own Initialisation
+### Frozen Dictionary Learning
 
-If you already have a pre-trained dictionary or want to control initialisation:
+`reppi` also supports incremental frozen dictionary learning for scenarios where a base dictionary is learned first and then extended over time with new class-specific residual dictionaries.
+
+The learned dictionary grows as:
+```python
+D = [ D_n | D_a_1 | D_a_2 | ... | D_a_k ]
+```
+
+Where:
+
+D_n is the frozen base/background dictionary
+D_a_i is the residual dictionary learned for class i
+
+Previously learned atoms remain frozen when new classes are added.
+
+**Single Frozen Residual Step**
+
+Use `FrozenDictionaryLearner` for a single residual-learning stage:
 
 ```python
-from reppi.dictionary.lc_ksvd import initialization4lcksvd
+from reppi.dictionary.frozen import FrozenDictionaryLearner
+from reppi import LCKSVD
 
-D_init, A_init, W_init, Q = initialization4lcksvd(
-    X_train, H_train,
-    n_components=570,
-    n_iter_init=20,
-    n_nonzero_coefs=30,
+frozen = FrozenDictionaryLearner(
+    D_frozen=D_base,
+    learner_class=LCKSVD,
+    learner_kwargs=dict(
+        n_components=32,
+        n_nonzero_coefs=10,
+        variant="lcksvd2",
+    ),
+    n_nonzero_coefs=10,
 )
 
-model.fit(X_train, H_train, D_init=D_init, A_init=A_init, W_init=W_init, Q=Q)
+frozen.fit(X_class, H_class)
+
+D_combined = frozen.D_combined_
+Gamma = frozen.transform(X_test)
+predictions = frozen.predict(X_test)
 ```
 
-## API Reference
+**Incremental Frozen Dictionary Pipeline**
 
-### `OMP`
+Use `IncrementalFrozenDictionary` for full sequential learning:
 
-```
-OMP(n_nonzero_coefs, mode='batch', check_dict=True)
-```
+```python
+from reppi.dictionary.frozen import IncrementalFrozenDictionary
+from reppi import LCKSVD
 
-| Parameter | Description |
-|-----------|-------------|
-| `n_nonzero_coefs` | Maximum non-zeros per signal (sparsity T) |
-| `mode` | `'batch'` (Batch-OMP, fast) or `'cholesky'` (single-signal, low memory) |
-| `check_dict` | Verify unit-norm columns before encoding |
-
-**Methods:** `encode(X, D, G=None) → Gamma`
-
-### `KSVD`
-
-```
-KSVD(n_components, n_nonzero_coefs, n_iter=10, exact_svd=False,
-     mu_thresh=0.99, mem_usage='normal', random_state=None, verbose=False)
-```
-
-| Parameter | Description |
-|-----------|-------------|
-| `n_components` | Number of dictionary atoms |
-| `n_nonzero_coefs` | Sparsity level T |
-| `n_iter` | Training iterations |
-| `exact_svd` | Use full SVD in atom update (slower, slightly better) |
-| `mu_thresh` | Mutual-incoherence threshold; atoms with correlation above this are replaced (default 0.99) |
-| `mem_usage` | `'high'` / `'normal'` / `'low'` — controls whether G=D'D and DtX are precomputed |
-
-**Methods:** `fit(X, D_init=None)`, `transform(X)`, `fit_transform(X)`  
-**Attributes:** `D_`, `errors_`
-
-### `LCKSVD`
-
-```
-LCKSVD(n_components, n_nonzero_coefs, alpha=4.0, beta=2.0,
-       variant='lcksvd2', n_iter=50, n_iter_init=20, exact_svd=False,
-       mu_thresh=0.99, random_state=None, verbose=False)
+inc = IncrementalFrozenDictionary(
+    base_learner_class=LCKSVD,
+    base_learner_kwargs=dict(
+        n_components=128,
+        n_nonzero_coefs=10,
+        variant="lcksvd2",
+    ),
+    residual_learner_class=LCKSVD,
+    residual_learner_kwargs=dict(
+        n_components=32,
+        n_nonzero_coefs=10,
+        variant="lcksvd2",
+    ),
+    n_nonzero_coefs=10,
+)
 ```
 
-| Parameter | Description |
-|-----------|-------------|
-| `alpha` | Weight for label-consistency term (√α in the paper) |
-| `beta` | Weight for classifier term (√β); LC-KSVD2 only |
-| `variant` | `'lcksvd1'` or `'lcksvd2'` |
-| `n_iter_init` | K-SVD iterations for the warm-start initialisation phase |
-
-**Methods:** `fit(X, H, ...)`, `transform(X)`, `predict(X)`, `score(X, H)`  
-**Attributes:** `D_`, `W_`, `A_`, `errors_`
 
 ## References
 
