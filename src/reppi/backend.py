@@ -1,6 +1,6 @@
 # reppi/backend.py
 
-USE_GPU = False
+USE_GPU = True
 
 if USE_GPU:
     import cupy as xp
