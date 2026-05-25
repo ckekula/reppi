@@ -61,13 +61,12 @@ For LC-KSVD2::
 
 from __future__ import annotations
 
-import numpy as np
-from scipy import linalg
+from reppi.backend import xp
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp import OMP, batch_omp
-from reppi.sparse.src import col_norms_squared, normalize_columns, rep_error_squared
+from reppi.sparse.src import normalize_columns, rep_error_squared
 from reppi.dictionary.ksvd import KSVD, _optimize_atom, _clear_dict
 
 
@@ -77,11 +76,11 @@ from reppi.dictionary.ksvd import KSVD, _optimize_atom, _clear_dict
 
 
 def _build_label_consistent_target(
-    H: np.ndarray,
+    H: xp.ndarray,
     n_components: int,
     n_nonzero_coefs: int,
-    sparse_codes: np.ndarray,
-) -> np.ndarray:
+    sparse_codes: xp.ndarray,
+) -> xp.ndarray:
     """
     Build the label-consistent target matrix Q.
 
@@ -91,18 +90,18 @@ def _build_label_consistent_target(
 
     Parameters
     ----------
-    H : np.ndarray, shape (n_classes, n_samples)
+    H : xp.ndarray, shape (n_classes, n_samples)
         One-hot class label matrix.
     n_components : int
         Total number of dictionary atoms.
     n_nonzero_coefs : int
         Sparsity level T.
-    sparse_codes : np.ndarray, shape (n_components, n_samples)
+    sparse_codes : xp.ndarray, shape (n_components, n_samples)
         Current sparse codes (used to determine per-class atom assignment).
 
     Returns
     -------
-    Q : np.ndarray, shape (n_components, n_samples)
+    Q : xp.ndarray, shape (n_components, n_samples)
     """
     n_classes, n_samples = H.shape
 
@@ -110,29 +109,29 @@ def _build_label_consistent_target(
     atoms_per_class = n_components // n_classes
 
     # Assign atoms to classes in order
-    atom_class = np.zeros(n_components, dtype=int)
+    atom_class = xp.zeros(n_components, dtype=int)
     for c in range(n_classes):
         start = c * atoms_per_class
         end = start + atoms_per_class if c < n_classes - 1 else n_components
         atom_class[start:end] = c
 
-    Q = np.zeros((n_components, n_samples))
+    Q = xp.zeros((n_components, n_samples))
     for i in range(n_samples):
-        cls = int(np.argmax(H[:, i]))
+        cls = int(xp.argmax(H[:, i]))
         Q[atom_class == cls, i] = 1.0
 
     return Q
 
 
 def initialization4lcksvd(
-    X: np.ndarray,
-    H: np.ndarray,
+    X: xp.ndarray,
+    H: xp.ndarray,
     n_components: int,
     n_iter_init: int,
     n_nonzero_coefs: int,
     random_state: int | None = None,
     verbose: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[xp.ndarray, xp.ndarray, xp.ndarray, xp.ndarray]:
     """
     Initialise D, A (label-consistency transform), W (classifier), and Q.
 
@@ -142,9 +141,9 @@ def initialization4lcksvd(
 
     Parameters
     ----------
-    X : np.ndarray, shape (n_features, n_samples)
+    X : xp.ndarray, shape (n_features, n_samples)
         Training signals.
-    H : np.ndarray, shape (n_classes, n_samples)
+    H : xp.ndarray, shape (n_classes, n_samples)
         One-hot label matrix.
     n_components : int
         Dictionary size.
@@ -157,12 +156,12 @@ def initialization4lcksvd(
 
     Returns
     -------
-    D_init : np.ndarray, shape (n_features, n_components)
-    A_init : np.ndarray, shape (n_components, n_components)
+    D_init : xp.ndarray, shape (n_features, n_components)
+    A_init : xp.ndarray, shape (n_components, n_components)
         Initial label-consistency transform.
-    W_init : np.ndarray, shape (n_classes, n_components)
+    W_init : xp.ndarray, shape (n_classes, n_components)
         Initial linear classifier weights.
-    Q : np.ndarray, shape (n_components, n_samples)
+    Q : xp.ndarray, shape (n_components, n_samples)
         Label-consistent sparse code targets.
     """
     # Step 1: standard K-SVD initialisation
@@ -185,10 +184,10 @@ def initialization4lcksvd(
 
     # Step 4: fit W (classifier) via least squares: W * Gamma ≈ H
     # W = H @ Gamma.T @ pinv(Gamma @ Gamma.T)
-    W_init = H @ np.linalg.pinv(Gamma)
+    W_init = H @ xp.linalg.pinv(Gamma)
 
     # Step 5: fit A (label-consistency map) via least squares: A * Gamma ≈ Q
-    A_init = Q @ np.linalg.pinv(Gamma)
+    A_init = Q @ xp.linalg.pinv(Gamma)
 
     return D_init, A_init, W_init, Q
 
@@ -199,12 +198,12 @@ def initialization4lcksvd(
 
 
 def _augment_data(
-    X: np.ndarray,
-    Q: np.ndarray,
-    H: np.ndarray | None,
+    X: xp.ndarray,
+    Q: xp.ndarray,
+    H: xp.ndarray | None,
     sqrt_alpha: float,
     sqrt_beta: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[xp.ndarray, xp.ndarray, xp.ndarray]:
     """
     Build the augmented signal/dictionary system for LC-KSVD.
 
@@ -220,7 +219,7 @@ def _augment_data(
 
     Returns
     -------
-    X_aug : np.ndarray
+    X_aug : xp.ndarray
     alpha_scale : float  (for constructing D_aug at each iteration)
     beta_scale : float
     """
@@ -231,7 +230,7 @@ def _augment_data(
     if H is not None:
         parts.append(sqrt_beta * H)
 
-    X_aug = np.vstack(parts)
+    X_aug = xp.vstack(parts)
     return X_aug, alpha_scale, beta_scale
 
 
@@ -264,11 +263,11 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
     Attributes
     ----------
-    D_ : np.ndarray, shape (n_features, n_components)
+    D_ : xp.ndarray, shape (n_features, n_components)
         Learned dictionary.
-    W_ : np.ndarray, shape (n_classes, n_components)
+    W_ : xp.ndarray, shape (n_classes, n_components)
         Learned linear classifier weights.
-    A_ : np.ndarray, shape (n_components, n_components)
+    A_ : xp.ndarray, shape (n_components, n_components)
         Learned label-consistency transform.
     errors_ : list of float
         Per-iteration RMSE on training data.
@@ -302,9 +301,9 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         self.random_state = random_state
         self.verbose = verbose
 
-        self.D_: np.ndarray | None = None
-        self.W_: np.ndarray | None = None
-        self.A_: np.ndarray | None = None
+        self.D_: xp.ndarray | None = None
+        self.W_: xp.ndarray | None = None
+        self.A_: xp.ndarray | None = None
         self.errors_: list[float] = []
         self.class_boundaries_: dict[int, tuple[int, int]] | None = None
 
@@ -314,37 +313,37 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
     def fit(
         self,
-        X: np.ndarray,
-        H: np.ndarray,
-        D_init: np.ndarray | None = None,
-        A_init: np.ndarray | None = None,
-        W_init: np.ndarray | None = None,
-        Q: np.ndarray | None = None,
+        X: xp.ndarray,
+        H: xp.ndarray,
+        D_init: xp.ndarray | None = None,
+        A_init: xp.ndarray | None = None,
+        W_init: xp.ndarray | None = None,
+        Q: xp.ndarray | None = None,
     ) -> "LCKSVD":
         """
         Learn a discriminative dictionary from labelled training data.
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
+        X : xp.ndarray, shape (n_features, n_samples)
             Training signals.
-        H : np.ndarray, shape (n_classes, n_samples)
+        H : xp.ndarray, shape (n_classes, n_samples)
             One-hot label matrix.
-        D_init : np.ndarray or None
+        D_init : xp.ndarray or None
             Initial dictionary. If None, a K-SVD initialisation is run.
-        A_init : np.ndarray or None
+        A_init : xp.ndarray or None
             Initial label-consistency transform.
-        W_init : np.ndarray or None
+        W_init : xp.ndarray or None
             Initial classifier weights (required / used for LC-KSVD2).
-        Q : np.ndarray or None
+        Q : xp.ndarray or None
             Label-consistent target matrix. Computed from H if None.
 
         Returns
         -------
         self
         """
-        X = np.asarray(X, dtype=float)
-        H = np.asarray(H, dtype=float)
+        X = xp.asarray(X, dtype=float)
+        H = xp.asarray(H, dtype=float)
         n_features, n_samples = X.shape
         n_classes = H.shape[0]
 
@@ -392,8 +391,8 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             # ---- Dictionary update (on original data only) ----
             # We update D, A (and W for LC-KSVD2) jointly via the
             # augmented residual, but evaluate coherence/usage on original X.
-            unused = np.arange(n_samples)
-            replaced = np.zeros(self.n_components, dtype=bool)
+            unused = xp.arange(n_samples)
+            replaced = xp.zeros(self.n_components, dtype=bool)
 
             for j in range(self.n_components):
                 D_aug_norm[:, j], gamma_j, idx, unused, replaced = _optimize_atom(
@@ -409,10 +408,10 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
             # ---- Update classifier W (LC-KSVD2) via least squares ----
             if use_classifier_term:
-                W = H @ np.linalg.pinv(Gamma)
+                W = H @ xp.linalg.pinv(Gamma)
 
             # ---- Update A via least squares ----
-            A = Q @ np.linalg.pinv(Gamma)
+            A = Q @ xp.linalg.pinv(Gamma)
 
             # ---- Clear incoherent / rarely-used atoms ----
             # Rebuild normalised augmented dict for coherence checking
@@ -428,7 +427,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             D = normalize_columns(D)
 
             # ---- Track RMSE on original X ----
-            err = float(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
+            err = float(xp.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
             self.errors_.append(err)
 
             if self.verbose:
@@ -450,23 +449,23 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
         return self
 
-    def transform(self, X: np.ndarray) -> np.ndarray:
+    def transform(self, X: xp.ndarray) -> xp.ndarray:
         """
         Encode X using the learned dictionary D.
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
+        X : xp.ndarray, shape (n_features, n_samples)
 
         Returns
         -------
-        Gamma : np.ndarray, shape (n_components, n_samples)
+        Gamma : xp.ndarray, shape (n_components, n_samples)
         """
         self._check_fitted()
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, self.D_)
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, X: xp.ndarray) -> xp.ndarray:
         """
         Classify test signals using the learned classifier W.
 
@@ -474,11 +473,11 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
+        X : xp.ndarray, shape (n_features, n_samples)
 
         Returns
         -------
-        labels : np.ndarray, shape (n_samples,)  integer class indices
+        labels : xp.ndarray, shape (n_samples,)  integer class indices
         """
         self._check_fitted()
         if self.W_ is None:
@@ -488,49 +487,49 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             )
         Gamma = self.transform(X)
         scores = self.W_ @ Gamma          # (n_classes, n_samples)
-        return np.argmax(scores, axis=0)
+        return xp.argmax(scores, axis=0)
 
-    def score(self, X: np.ndarray, H: np.ndarray) -> float:
+    def score(self, X: xp.ndarray, H: xp.ndarray) -> float:
         """
         Classification accuracy on (X, H).
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
-        H : np.ndarray, shape (n_classes, n_samples) — one-hot labels
+        X : xp.ndarray, shape (n_features, n_samples)
+        H : xp.ndarray, shape (n_classes, n_samples) — one-hot labels
 
         Returns
         -------
         accuracy : float in [0, 1]
         """
-        true_labels = np.argmax(H, axis=0)
+        true_labels = xp.argmax(H, axis=0)
         pred_labels = self.predict(X)
-        return float(np.mean(pred_labels == true_labels))
+        return float(xp.mean(pred_labels == true_labels))
 
     @staticmethod
     def _build_aug_dict(
-        D: np.ndarray,
-        A: np.ndarray,
-        W: np.ndarray,
+        D: xp.ndarray,
+        A: xp.ndarray,
+        W: xp.ndarray,
         sqrt_alpha: float,
         sqrt_beta: float,
         use_classifier: bool,
-    ) -> np.ndarray:
+    ) -> xp.ndarray:
         """Stack [D ; sqrt_alpha*A ; (sqrt_beta*W)]."""
         parts = [D, sqrt_alpha * A]
         if use_classifier:
             parts.append(sqrt_beta * W)
-        return np.vstack(parts)
+        return xp.vstack(parts)
 
     @staticmethod
     def _split_aug_dict(
-        D_aug: np.ndarray,
+        D_aug: xp.ndarray,
         n_features: int,
         n_classes: int,
         sqrt_alpha: float,
         sqrt_beta: float,
         use_classifier: bool,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[xp.ndarray, xp.ndarray, xp.ndarray]:
         """
         Recover (D, A, W) from the augmented dictionary D_aug.
 
@@ -543,5 +542,5 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         if use_classifier:
             W = D_aug[n_features + A_rows:, :] / max(sqrt_beta, 1e-14)
         else:
-            W = np.zeros((n_classes, n_components))
+            W = xp.zeros((n_classes, n_components))
         return D, A, W

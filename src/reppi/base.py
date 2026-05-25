@@ -3,28 +3,26 @@ Base classes for representation learning algorithms.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
-import numpy as np
-
+from reppi.backend import xp
 
 class BaseSparseCoder(ABC):
     """Abstract base class for sparse coding algorithms."""
 
     @abstractmethod
-    def encode(self, X: np.ndarray, D: np.ndarray) -> np.ndarray:
+    def encode(self, X: xp.ndarray, D: xp.ndarray) -> xp.ndarray:
         """
         Compute sparse codes for signals X given dictionary D.
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
+        X : xp.ndarray, shape (n_features, n_samples)
             Input signals as columns.
-        D : np.ndarray, shape (n_features, n_atoms)
+        D : xp.ndarray, shape (n_features, n_atoms)
             Dictionary with (approximately) unit-norm columns.
 
         Returns
         -------
-        Gamma : np.ndarray, shape (n_atoms, n_samples)
+        Gamma : xp.ndarray, shape (n_atoms, n_samples)
             Sparse representation matrix.
         """
         raise NotImplementedError
@@ -34,13 +32,13 @@ class BaseDictionaryLearner(ABC):
     """Abstract base class for dictionary learning algorithms."""
 
     @abstractmethod
-    def fit(self, X: np.ndarray) -> "BaseDictionaryLearner":
+    def fit(self, X: xp.ndarray) -> "BaseDictionaryLearner":
         """
         Learn a dictionary from training data.
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
+        X : xp.ndarray, shape (n_features, n_samples)
             Training signals as columns.
 
         Returns
@@ -50,23 +48,23 @@ class BaseDictionaryLearner(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def transform(self, X: np.ndarray) -> np.ndarray:
+    def transform(self, X: xp.ndarray) -> xp.ndarray:
         """
         Encode signals using the learned dictionary.
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
+        X : xp.ndarray, shape (n_features, n_samples)
             Signals to encode.
 
         Returns
         -------
-        Gamma : np.ndarray, shape (n_atoms, n_samples)
+        Gamma : xp.ndarray, shape (n_atoms, n_samples)
             Sparse representations.
         """
         raise NotImplementedError
 
-    def fit_transform(self, X: np.ndarray) -> np.ndarray:
+    def fit_transform(self, X: xp.ndarray) -> xp.ndarray:
         """Fit and return sparse codes on the training data."""
         return self.fit(X).transform(X)
 
@@ -95,8 +93,8 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
 
     Required attributes after ``fit``
     ----------------------------------
-    D_  : np.ndarray, shape (n_features, n_components)
-    W_  : np.ndarray, shape (n_classes, n_components)  — linear classifier
+    D_  : xp.ndarray, shape (n_features, n_components)
+    W_  : xp.ndarray, shape (n_classes, n_components)  — linear classifier
     class_boundaries_ : dict[int, tuple[int, int]]
     """
 
@@ -107,16 +105,16 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
     @abstractmethod
     def fit(                                        # type: ignore[override]
         self,
-        X: np.ndarray,
-        H: np.ndarray,
+        X: xp.ndarray,
+        H: xp.ndarray,
     ) -> "BaseDiscriminativeDictionaryLearner":
         """
         Learn a discriminative dictionary from labelled training data.
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
-        H : np.ndarray, shape (n_classes, n_samples)
+        X : xp.ndarray, shape (n_features, n_samples)
+        H : xp.ndarray, shape (n_classes, n_samples)
             One-hot label matrix.
 
         Returns
@@ -126,29 +124,29 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
         raise NotImplementedError
 
     @abstractmethod
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, X: xp.ndarray) -> xp.ndarray:
         """
         Predict class indices for each column of X.
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
+        X : xp.ndarray, shape (n_features, n_samples)
 
         Returns
         -------
-        labels : np.ndarray, shape (n_samples,)  integer class indices
+        labels : xp.ndarray, shape (n_samples,)  integer class indices
         """
         raise NotImplementedError
 
     @abstractmethod
-    def score(self, X: np.ndarray, H: np.ndarray) -> float:
+    def score(self, X: xp.ndarray, H: xp.ndarray) -> float:
         """
         Classification accuracy on (X, H).
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
-        H : np.ndarray, shape (n_classes, n_samples) — one-hot labels
+        X : xp.ndarray, shape (n_features, n_samples)
+        H : xp.ndarray, shape (n_classes, n_samples) — one-hot labels
 
         Returns
         -------
@@ -160,7 +158,7 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
     # Per-class sub-dictionary API (used by the frozen framework)
     # ------------------------------------------------------------------
 
-    def get_class_dict(self, class_idx: int) -> np.ndarray:
+    def get_class_dict(self, class_idx: int) -> xp.ndarray:
         """
         Return the sub-dictionary for ``class_idx``.
 
@@ -172,7 +170,7 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
 
         Returns
         -------
-        D_c : np.ndarray, shape (n_features, n_atoms_for_class)
+        D_c : xp.ndarray, shape (n_features, n_atoms_for_class)
         """
         self._check_fitted()
         if not hasattr(self, "class_boundaries_") or self.class_boundaries_ is None:

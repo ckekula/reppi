@@ -13,8 +13,7 @@ Batch-OMP integration follows:
 
 from __future__ import annotations
 
-import numpy as np
-from scipy import linalg
+from reppi.backend import xp
 
 from reppi.base import BaseDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
@@ -78,21 +77,21 @@ class KSVD(BaseDictionaryLearner):
         self.verbose = verbose
 
         # Set after fit
-        self.D_: np.ndarray | None = None
+        self.D_: xp.ndarray | None = None
         self.errors_: list[float] = []
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def fit(self, X: np.ndarray, D_init: np.ndarray | None = None) -> "KSVD":
+    def fit(self, X: xp.ndarray, D_init: xp.ndarray | None = None) -> "KSVD":
         """
         Learn a dictionary from training signals.
 
         Parameters
         ----------
-        X : np.ndarray, shape (n_features, n_samples)
-        D_init : np.ndarray or None, shape (n_features, n_components)
+        X : xp.ndarray, shape (n_features, n_samples)
+        D_init : xp.ndarray or None, shape (n_features, n_components)
             Optional initial dictionary.  If None, random training signals
             are chosen as initial atoms.
 
@@ -100,8 +99,8 @@ class KSVD(BaseDictionaryLearner):
         -------
         self
         """
-        X = np.asarray(X, dtype=float)
-        rng = np.random.default_rng(self.random_state)
+        X = xp.asarray(X, dtype=float)
+        rng = xp.random.RandomState(self.random_state)
 
         D = self._init_dict(X, D_init, rng)
         self.errors_ = []
@@ -110,8 +109,8 @@ class KSVD(BaseDictionaryLearner):
             G = D.T @ D if self.mem_usage in ("high", "normal") else None
             Gamma = self._sparse_code(X, D, G)
 
-            unused = np.arange(X.shape[1])
-            replaced = np.zeros(self.n_components, dtype=bool)
+            unused = xp.arange(X.shape[1])
+            replaced = xp.zeros(self.n_components, dtype=bool)
 
             for j in range(self.n_components):
                 D[:, j], gamma_j, idx, unused, replaced = _optimize_atom(
@@ -119,7 +118,7 @@ class KSVD(BaseDictionaryLearner):
                 )
                 Gamma[j, idx] = gamma_j
 
-            err = float(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
+            err = float(xp.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
             self.errors_.append(err)
 
             D, _ = _clear_dict(D, Gamma, X, self.mu_thresh, unused, replaced)
@@ -130,7 +129,7 @@ class KSVD(BaseDictionaryLearner):
         self.D_ = D
         return self
 
-    def transform(self, X: np.ndarray) -> np.ndarray:
+    def transform(self, X: xp.ndarray) -> xp.ndarray:
         """Encode X using the learned dictionary."""
         if self.D_ is None:
             raise DictionaryLearningError("Call fit() before transform().")
@@ -143,22 +142,22 @@ class KSVD(BaseDictionaryLearner):
 
     def _init_dict(
         self,
-        X: np.ndarray,
-        D_init: np.ndarray | None,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
+        X: xp.ndarray,
+        D_init: xp.ndarray | None,
+        rng: xp.random.RandomState,
+    ) -> xp.ndarray:
         n_features, n_samples = X.shape
         k = self.n_components
 
         if D_init is not None:
-            D = np.asarray(D_init, dtype=float)
+            D = xp.asarray(D_init, dtype=float)
             if D.shape != (n_features, k):
                 raise DictionaryLearningError(
                     f"D_init shape {D.shape} does not match "
                     f"(n_features={n_features}, n_components={k})."
                 )
         else:
-            valid = np.where(col_norms_squared(X) > 1e-6)[0]
+            valid = xp.where(col_norms_squared(X) > 1e-6)[0]
             if len(valid) < k:
                 raise DictionaryLearningError(
                     "Not enough non-zero training signals to initialise the dictionary."
@@ -170,10 +169,10 @@ class KSVD(BaseDictionaryLearner):
 
     def _sparse_code(
         self,
-        X: np.ndarray,
-        D: np.ndarray,
-        G: np.ndarray | None,
-    ) -> np.ndarray:
+        X: xp.ndarray,
+        D: xp.ndarray,
+        G: xp.ndarray | None,
+    ) -> xp.ndarray:
         if self.mem_usage == "high" and G is not None:
             return batch_omp(D.T @ X, G, self.n_nonzero_coefs)
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
@@ -186,14 +185,14 @@ class KSVD(BaseDictionaryLearner):
 
 
 def _optimize_atom(
-    X: np.ndarray,
-    D: np.ndarray,
+    X: xp.ndarray,
+    D: xp.ndarray,
     j: int,
-    Gamma: np.ndarray,
-    unused_sigs: np.ndarray,
-    replaced: np.ndarray,
+    Gamma: xp.ndarray,
+    unused_sigs: xp.ndarray,
+    replaced: xp.ndarray,
     exact_svd: bool,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[xp.ndarray, xp.ndarray, xp.ndarray, xp.ndarray, xp.ndarray]:
     """
     Update the j-th dictionary atom and the corresponding sparse codes.
 
@@ -201,27 +200,27 @@ def _optimize_atom(
 
     Returns
     -------
-    atom : np.ndarray, shape (n_features,)
-    gamma_j : np.ndarray, non-zero coefficients for atom j
-    data_indices : np.ndarray, signal indices that use atom j
-    unused_sigs : np.ndarray (updated)
-    replaced : np.ndarray (updated)
+    atom : xp.ndarray, shape (n_features,)
+    gamma_j : xp.ndarray, non-zero coefficients for atom j
+    data_indices : xp.ndarray, signal indices that use atom j
+    unused_sigs : xp.ndarray (updated)
+    replaced : xp.ndarray (updated)
     """
     # Signals that actively use atom j
-    data_indices = np.where(np.abs(Gamma[j, :]) > 1e-10)[0]
+    data_indices = xp.where(xp.abs(Gamma[j, :]) > 1e-10)[0]
 
     # --- Dead atom: replace with the worst-reconstructed unused signal ---
     if len(data_indices) == 0:
         max_signals = 5000
-        perm = np.random.permutation(len(unused_sigs))[:min(max_signals, len(unused_sigs))]
+        perm = xp.random.permutation(len(unused_sigs))[:min(max_signals, len(unused_sigs))]
         candidates = unused_sigs[perm]
         E = rep_error_squared(X, D, Gamma, block_size=len(candidates) + 1)
-        best = int(np.argmax(E[candidates]))
+        best = int(xp.argmax(E[candidates]))
         atom = X[:, candidates[best]]
-        atom = atom / max(np.linalg.norm(atom), 1e-14)
-        gamma_j = np.zeros(len(data_indices))
+        atom = atom / max(xp.linalg.norm(atom), 1e-14)
+        gamma_j = xp.zeros(len(data_indices))
         # Remove used signal from the pool
-        mask = np.ones(len(unused_sigs), dtype=bool)
+        mask = xp.ones(len(unused_sigs), dtype=bool)
         mask[perm[best]] = False
         unused_sigs = unused_sigs[mask]
         replaced[j] = True
@@ -233,17 +232,17 @@ def _optimize_atom(
 
     # Residual matrix: remove atom j's contribution then add it back
     # E = X[:,support] - D*small_gamma + d_j * g_j
-    E = X[:, data_indices] - D @ small_gamma + np.outer(D[:, j], g_j)
+    E = X[:, data_indices] - D @ small_gamma + xp.outer(D[:, j], g_j)
 
     if exact_svd:
         # Exact update via rank-1 SVD
-        U, s, Vt = np.linalg.svd(E, full_matrices=False)
+        U, s, Vt = xp.linalg.svd(E, full_matrices=False)
         atom = U[:, 0]
         gamma_j = s[0] * Vt[0, :]
     else:
         # Approximate update (alternating optimisation)
         atom = E @ g_j
-        atom_norm = np.linalg.norm(atom)
+        atom_norm = xp.linalg.norm(atom)
         atom = atom / max(atom_norm, 1e-14)
         gamma_j = atom @ E  # (|support|,)
 
@@ -251,14 +250,14 @@ def _optimize_atom(
 
 
 def _clear_dict(
-    D: np.ndarray,
-    Gamma: np.ndarray,
-    X: np.ndarray,
+    D: xp.ndarray,
+    Gamma: xp.ndarray,
+    X: xp.ndarray,
     mu_thresh: float,
-    unused_sigs: np.ndarray,
-    replaced: np.ndarray,
+    unused_sigs: xp.ndarray,
+    replaced: xp.ndarray,
     use_thresh: int = 4,
-) -> tuple[np.ndarray, int]:
+) -> tuple[xp.ndarray, int]:
     """
     Replace rarely-used or highly-correlated atoms with high-error signals.
 
@@ -266,12 +265,12 @@ def _clear_dict(
 
     Returns
     -------
-    D : np.ndarray (possibly modified)
+    D : xp.ndarray (possibly modified)
     cleared : int  number of atoms replaced
     """
     n_atoms = D.shape[1]
     err = rep_error_squared(X, D, Gamma)
-    use_count = (np.abs(Gamma) > 1e-7).sum(axis=1)  # (n_atoms,)
+    use_count = (xp.abs(Gamma) > 1e-7).sum(axis=1)  # (n_atoms,)
     cleared = 0
 
     for j in range(n_atoms):
@@ -279,14 +278,14 @@ def _clear_dict(
             break
         Gj = D.T @ D[:, j]
         Gj[j] = 0.0
-        bad_coherence = np.max(Gj ** 2) > mu_thresh ** 2
+        bad_coherence = xp.max(Gj ** 2) > mu_thresh ** 2
         bad_usage = use_count[j] < use_thresh
 
         if (bad_coherence or bad_usage) and not replaced[j]:
-            best = int(np.argmax(err[unused_sigs]))
+            best = int(xp.argmax(err[unused_sigs]))
             atom = X[:, unused_sigs[best]]
-            D[:, j] = atom / max(np.linalg.norm(atom), 1e-14)
-            unused_sigs = np.delete(unused_sigs, best)
+            D[:, j] = atom / max(xp.linalg.norm(atom), 1e-14)
+            unused_sigs = xp.delete(unused_sigs, best)
             cleared += 1
 
     return D, cleared

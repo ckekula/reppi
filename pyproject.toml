@@ -1,10 +1,11 @@
 [project]
 name = "reppi"
-version = "0.1.2"
+version = "0.1.4"
 readme = "README.md"
 description = "A Python toolkit for representation-based learning/classification algorithms"
 requires-python = ">=3.12"
 dependencies = [
+    "cupy-cuda13x>=14.1.0",
     "numpy>=2.4.4",
     "scipy>=1.17.1",
 ]

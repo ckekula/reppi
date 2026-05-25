@@ -71,7 +71,6 @@ import numpy as np
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp import OMP
-from reppi.sparse.src import normalize_columns
 
 
 # ---------------------------------------------------------------------------
