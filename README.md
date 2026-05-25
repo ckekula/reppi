@@ -1,5 +1,8 @@
 # reppi
 
+[![GitHub](https://img.shields.io/badge/repo-GitHub-black?logo=github)](https://github.com/ckekula/reppi)
+[![Docs](https://img.shields.io/badge/docs-online-blue?logo=readthedocs)](https://ckekula.github.io/reppi/reppi.html)
+
 A Python library for representation learning — sparse coding and dictionary learning algorithms implemented close to their original formulations.
 
 ## Installation
@@ -15,6 +18,7 @@ pip install reppi
 | Orthogonal Matching Pursuit | `OMP` | Elad et al., 2008 |
 | K-SVD | `KSVD` | Aharon et al., 2006 |
 | Label Consistent K-SVD | `LCKSVD` | Jiang et al., 2011 |
+| Frozen Dictionary Learning | `IncrementalFrozenDictionary` | Carroll et al., 2017 |
 
 ## Convention
 
@@ -171,3 +175,4 @@ inc = IncrementalFrozenDictionary(
 - M. Aharon, M. Elad, A. Bruckstein. *"The K-SVD: An Algorithm for Designing Overcomplete Dictionaries for Sparse Representation"*. IEEE Trans. Signal Processing, 54(11), 2006.
 - M. Elad, R. Rubinstein, M. Zibulevsky. *"Efficient Implementation of the K-SVD Algorithm using Batch Orthogonal Matching Pursuit"*. Technion Technical Report, 2008.
 - Z. Jiang, Z. Lin, L. Davis. *"Learning A Discriminative Dictionary for Sparse Coding via Label Consistent K-SVD"*. CVPR, 2011.
+- B. T. Carroll, B. M. Whitaker, W. Daley, D. V. Anderson. "Outlier Learning via Augmented Frozen Dictionaries". IEEE/ACM Transactions on Audio, Speech, and Language Processing, 2017.
