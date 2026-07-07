@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
@@ -30,6 +32,27 @@ class IncrementalFrozenDictionary:
 
     3. ``predict(X)`` / ``score(X, H)``
        Classify using the full combined dictionary and the latest W.
+
+    Checkpointing
+    -------------
+    Each call to ``fit_base`` or ``add_class`` represents one *stage* of
+    the incremental pipeline, and each stage trains its own, differently
+    shaped, inner dictionary-learner instance. If a ``checkpoint_dir`` is
+    given, this class therefore does NOT hand every stage the same path —
+    doing so would cause the second stage's checkpoint load to fail (or,
+    worse, be silently wrong) since its X/H shapes differ from the first
+    stage's. Instead, each stage gets its own subdirectory:
+
+        <checkpoint_dir>/base/           (fit_base)
+        <checkpoint_dir>/class_<label>/  (add_class, per class_label)
+
+    so that interrupting and resuming an individual stage's training does
+    not collide with any other stage's saved state. This only has an
+    effect if the underlying ``base_learner_class`` /
+    ``residual_learner_class`` (e.g. KSVD, LCKSVD) support a
+    ``checkpoint_dir`` argument on their own ``fit()``; learners that
+    don't will simply ignore it being unset and train without
+    checkpointing.
 
     Parameters
     ----------
@@ -112,6 +135,8 @@ class IncrementalFrozenDictionary:
         self,
         X: np.ndarray,
         H: np.ndarray,
+        checkpoint_dir: str | None = None,
+        resume: bool = True,
     ) -> "IncrementalFrozenDictionary":
         """
         Learn the base dictionary from normal / background data.
@@ -121,6 +146,14 @@ class IncrementalFrozenDictionary:
         X : np.ndarray, shape (n_features, n_samples)
         H : np.ndarray, shape (n_classes, n_samples)
             One-hot labels for the base class(es).
+        checkpoint_dir : str or None
+            If given, a ``base`` subdirectory under this path is passed to
+            the base learner's own ``fit(..., checkpoint_dir=...)``, if it
+            supports one. See the class docstring for why this is a
+            dedicated subdirectory rather than shared across stages.
+        resume : bool
+            Forwarded to the base learner's ``fit()`` alongside the
+            ``base`` checkpoint subdirectory. Default True.
 
         Returns
         -------
@@ -130,7 +163,11 @@ class IncrementalFrozenDictionary:
         H = np.asarray(H, dtype=float)
 
         learner = self.base_learner_class(**self.base_learner_kwargs)
-        learner.fit(X, H)
+        fit_kwargs = {}
+        if checkpoint_dir is not None:
+            fit_kwargs["checkpoint_dir"] = os.path.join(checkpoint_dir, "base")
+            fit_kwargs["resume"] = resume
+        learner.fit(X, H, **fit_kwargs)
 
         self.D_ = learner.D_
         self.class_boundaries_ = dict(learner.class_boundaries_ or {})
@@ -153,6 +190,8 @@ class IncrementalFrozenDictionary:
         H: np.ndarray,
         class_label: int,
         learner_kwargs_override: dict | None = None,
+        checkpoint_dir: str | None = None,
+        resume: bool = True,
     ) -> "IncrementalFrozenDictionary":
         """
         Learn a residual dictionary for a new class and extend D_.
@@ -169,6 +208,17 @@ class IncrementalFrozenDictionary:
         learner_kwargs_override : dict or None
             If supplied, overrides ``residual_learner_kwargs`` for this
             call only.  Useful for adjusting n_components per class.
+        checkpoint_dir : str or None
+            If given, a ``class_<class_label>`` subdirectory under this
+            path is passed down to ``FrozenDictionaryLearner.fit()`` (and
+            from there to the residual learner's own ``fit()``), if
+            supported. Kept distinct per class_label, and distinct from
+            the base stage's ``base`` subdirectory, so that resuming one
+            stage never collides with another's saved state — see the
+            class docstring.
+        resume : bool
+            Forwarded down to the residual learner's ``fit()`` alongside
+            the per-class checkpoint subdirectory. Default True.
 
         Returns
         -------
@@ -202,7 +252,18 @@ class IncrementalFrozenDictionary:
             learn_on_residual=self.learn_on_residual,
             refit_classifier=False,  # we handle W ourselves below
         )
-        frozen_step.fit(X, H_for_learner, frozen_class_boundaries=dict(self.class_boundaries_))
+        stage_checkpoint_dir = (
+            os.path.join(checkpoint_dir, f"class_{class_label}")
+            if checkpoint_dir is not None
+            else None
+        )
+        frozen_step.fit(
+            X,
+            H_for_learner,
+            frozen_class_boundaries=dict(self.class_boundaries_),
+            checkpoint_dir=stage_checkpoint_dir,
+            resume=resume,
+        )
 
         # --- Extend D_ and class_boundaries_ ---
         n_prev = self.D_.shape[1]

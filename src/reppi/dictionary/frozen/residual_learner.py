@@ -87,6 +87,8 @@ class FrozenDictionaryLearner:
         X: np.ndarray,
         H: np.ndarray,
         frozen_class_boundaries: dict[int, tuple[int, int]] | None = None,
+        checkpoint_dir: str | None = None,
+        resume: bool = True,
     ) -> "FrozenDictionaryLearner":
         """
         Fit the residual dictionary on (X, H).
@@ -99,6 +101,21 @@ class FrozenDictionaryLearner:
             ``class_boundaries_`` from earlier frozen stages, used to build
             the merged ``class_boundaries_`` on the combined dictionary.
             Pass None if D_frozen has no class structure (e.g. base stage).
+        checkpoint_dir : str or None
+            If given, forwarded to the inner ``learner_class.fit()`` call
+            (e.g. KSVD or LCKSVD) so that training of the *active* residual
+            dictionary for this single stage can be checkpointed/resumed.
+            Only meaningful if ``learner_class.fit`` accepts a
+            ``checkpoint_dir`` argument; callers using a learner that
+            doesn't support checkpointing should leave this as None.
+            Each ``FrozenDictionaryLearner.fit()`` call represents exactly
+            one stage, so this directory should be unique per stage (the
+            caller — typically ``IncrementalFrozenDictionary`` — is
+            responsible for handing this class a stage-specific
+            subdirectory, not a shared one across stages).
+        resume : bool
+            Forwarded to the inner learner's ``fit()`` alongside
+            ``checkpoint_dir``. Default True.
 
         Returns
         -------
@@ -115,7 +132,11 @@ class FrozenDictionaryLearner:
         )
 
         learner = self.learner_class(**self.learner_kwargs)
-        learner.fit(X_train, H)
+        fit_kwargs = {}
+        if checkpoint_dir is not None:
+            fit_kwargs["checkpoint_dir"] = checkpoint_dir
+            fit_kwargs["resume"] = resume
+        learner.fit(X_train, H, **fit_kwargs)
         self.learner_ = learner
 
         D_active = learner.D_
@@ -178,4 +199,3 @@ class FrozenDictionaryLearner:
             raise DictionaryLearningError(
                 "Call fit() before transform() / predict()."
             )
-
