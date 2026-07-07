@@ -1,3 +1,3 @@
-from reppi.sparse.omp import OMP
+from reppi.sparse.omp.omp import OMP
 
 __all__ = ["OMP"]
