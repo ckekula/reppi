@@ -6,7 +6,7 @@ import numpy as np
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
-from reppi.sparse.omp import OMP
+from reppi.sparse.omp.omp import OMP
 
 from reppi.dictionary.frozen.utils import _fit_classifier
 from reppi.dictionary.frozen.residual_learner import FrozenDictionaryLearner

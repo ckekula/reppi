@@ -1,5 +1,5 @@
 import numpy as np
-from reppi.sparse.omp import OMP
+from reppi.sparse.omp.omp import OMP
 
 def _fit_classifier(
     Gamma: np.ndarray,

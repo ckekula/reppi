@@ -5,8 +5,8 @@ Utility functions for LC-KSVD.
 
 import numpy as np
 
-from reppi.sparse.omp import OMP
-from reppi.dictionary.ksvd import KSVD
+from reppi.sparse.omp.omp import OMP
+from reppi.dictionary.ksvd.ksvd import KSVD
 
 def _build_label_consistent_target(
     H: np.ndarray,

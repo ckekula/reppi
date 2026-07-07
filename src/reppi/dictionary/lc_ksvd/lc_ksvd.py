@@ -79,9 +79,9 @@ import numpy as np
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
-from reppi.sparse.omp import OMP
+from reppi.sparse.omp.omp import OMP
 from reppi.sparse.utils import normalize_columns, rep_error_squared
-from reppi.dictionary.ksvd import KSVD
+from reppi.dictionary.ksvd.ksvd import KSVD
 
 from reppi.dictionary.lc_ksvd.utils import initialization4lcksvd, _augment_data
 

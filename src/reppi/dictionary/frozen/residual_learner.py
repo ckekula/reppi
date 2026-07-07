@@ -4,7 +4,7 @@ import numpy as np
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
-from reppi.sparse.omp import OMP
+from reppi.sparse.omp.omp import OMP
 
 from reppi.dictionary.frozen.utils import _encode_residual, _fit_classifier
 
