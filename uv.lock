@@ -3,36 +3,6 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
-name = "cuda-pathfinder"
-version = "1.5.4"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/11/d0/c177e29701cf1d3008d7d2b16b5fc626592ce13bd535f8795c5f57187e0e/cuda_pathfinder-1.5.4-py3-none-any.whl", hash = "sha256:9563d3175ce1828531acf4b94e1c1c7d67208c347ca002493e2654878b26f4b7", size = 51657, upload-time = "2026-04-27T22:42:07.712Z" },
-]
-
-[[package]]
-name = "cupy-cuda13x"
-version = "14.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cuda-pathfinder" },
-    { name = "numpy" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/23/7e/21afe0ab60bd88acbfa0daa6e1d7beff31fc9ec72702173520f58236daec/cupy_cuda13x-14.1.0-cp312-cp312-manylinux2014_aarch64.whl", hash = "sha256:9b83ce4965466bf2bf99aaa6ce594c0547ca696f451676cd1d46124443476fb0", size = 73277053, upload-time = "2026-05-23T01:11:40.406Z" },
-    { url = "https://files.pythonhosted.org/packages/2c/2e/d3780ce0a8d951e632349bb989d8536e77e03e8ff1c419922ed933f3ba55/cupy_cuda13x-14.1.0-cp312-cp312-manylinux2014_x86_64.whl", hash = "sha256:3d3a64a850f5560239b942a833a6498e2d9a5fff4efbb6e93cddfa8c4f53b9cf", size = 69532518, upload-time = "2026-05-23T01:11:44.38Z" },
-    { url = "https://files.pythonhosted.org/packages/99/2d/5faee3a1626deac5feef290fd52460ad57460009e9738ec4f0e62d40af5b/cupy_cuda13x-14.1.0-cp312-cp312-win_amd64.whl", hash = "sha256:9e42ff785aec56e76ffc05fc0d92f7eab2a970dc7c377ad61288a98aa10e7db8", size = 35192581, upload-time = "2026-05-23T01:11:47.759Z" },
-    { url = "https://files.pythonhosted.org/packages/04/8a/31c58ffa8e1780c8f15492018997d5fb3548427f5fa0e6327becf26f00c6/cupy_cuda13x-14.1.0-cp313-cp313-manylinux2014_aarch64.whl", hash = "sha256:42f85f692a589b92a86627113e1072c534cc9d9047433b4291b8bd7b49fb238a", size = 72812202, upload-time = "2026-05-23T01:11:51.015Z" },
-    { url = "https://files.pythonhosted.org/packages/98/41/be34e911811a0369e3e66b1b618dfccdea1f84ad6a2cc17f146ce9095e99/cupy_cuda13x-14.1.0-cp313-cp313-manylinux2014_x86_64.whl", hash = "sha256:eef76f0647af5a9bfe3d0bac641f201deb5f15a644f4b13a2e68c0c62e6808fe", size = 69094718, upload-time = "2026-05-23T01:11:57.103Z" },
-    { url = "https://files.pythonhosted.org/packages/0a/c1/c92b4c9c2c561c1298dfad2e3dbb75e527ac1a15d567d8fb868fc277c80e/cupy_cuda13x-14.1.0-cp313-cp313-win_amd64.whl", hash = "sha256:18338008d428bf04dcd73ab2489c6f90c39b7ff439ab2b609115b9bb0e16e0ec", size = 35171775, upload-time = "2026-05-23T01:12:00.57Z" },
-    { url = "https://files.pythonhosted.org/packages/24/b4/8963aced61d836417ca681d7cd1b6b27916ed877a01f3adf7c902bd8f392/cupy_cuda13x-14.1.0-cp314-cp314-manylinux2014_aarch64.whl", hash = "sha256:fa77dc442a166e784e28e5c7dd4e1bb4b2ac54a2ec55c59c1af3c0ed27e14f69", size = 72680065, upload-time = "2026-05-23T01:12:03.979Z" },
-    { url = "https://files.pythonhosted.org/packages/8b/a8/2ae8d8235a236564e65a73812ee0bf4c1afe96b7104f754f100832f015e9/cupy_cuda13x-14.1.0-cp314-cp314-manylinux2014_x86_64.whl", hash = "sha256:7824fc7757bac2d91d6c810c4f5376359c1eeaf5d37c2625c4a670705f3d9f36", size = 68432300, upload-time = "2026-05-23T01:12:07.777Z" },
-    { url = "https://files.pythonhosted.org/packages/ee/12/8e1d2b9efda12e8ad5c648f1fc289454b7c6210c2f4d9e99d7663178d8e1/cupy_cuda13x-14.1.0-cp314-cp314-win_amd64.whl", hash = "sha256:f3c9f5e61fefc7920bcd3da9818679ea8f9319cca080dd88118f463a2ca08e41", size = 35323531, upload-time = "2026-05-23T01:12:11.024Z" },
-    { url = "https://files.pythonhosted.org/packages/f6/bc/6cceec523fd467fc6259c4c394d87a9e7e3b8f011685da028d9862bf8497/cupy_cuda13x-14.1.0-cp314-cp314t-manylinux2014_aarch64.whl", hash = "sha256:e5b2a0dcaa5fb27faf034f5e3d271eaa13c4a5351e2c6dec925a866c210f3605", size = 72984031, upload-time = "2026-05-23T01:12:14.388Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/43/180777ccc0f85ce4469f3e6e615c471968f482fed85827410090adf40523/cupy_cuda13x-14.1.0-cp314-cp314t-manylinux2014_x86_64.whl", hash = "sha256:69b314f0085d7ad46a671338e62b3f35270c144c31df8c443c0341b97a905980", size = 68662879, upload-time = "2026-05-23T01:12:18.04Z" },
-]
-
-[[package]]
 name = "numpy"
 version = "2.4.4"
 source = { registry = "https://pypi.org/simple" }
@@ -98,14 +68,12 @@ name = "reppi"
 version = "0.1.4"
 source = { editable = "." }
 dependencies = [
-    { name = "cupy-cuda13x" },
     { name = "numpy" },
     { name = "scipy" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "cupy-cuda13x", specifier = ">=14.1.0" },
     { name = "numpy", specifier = ">=2.4.4" },
     { name = "scipy", specifier = ">=1.17.1" },
 ]
