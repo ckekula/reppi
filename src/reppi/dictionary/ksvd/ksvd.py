@@ -13,6 +13,9 @@ Batch-OMP integration follows:
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import numpy as np
 
 from reppi.base import BaseDictionaryLearner
@@ -21,6 +24,9 @@ from reppi.sparse.omp import OMP, batch_omp
 from reppi.sparse.utils import col_norms_squared, normalize_columns, rep_error_squared
 
 from reppi.dictionary.ksvd.utils import _optimize_atom, _clear_dict
+
+_CHECKPOINT_FILENAME = "ksvd_checkpoint.npz"
+
 
 class KSVD(BaseDictionaryLearner):
     """
@@ -53,6 +59,18 @@ class KSVD(BaseDictionaryLearner):
         Seed for reproducible atom initialisation.
     verbose : bool
         Print iteration progress (default False).
+
+    Attributes
+    ----------
+    D_ : np.ndarray, shape (n_features, n_components)
+        Learned dictionary (set after fit()).
+    Gamma_ : np.ndarray, shape (n_components, n_samples)
+        Sparse codes for the training data from the final iteration
+        (set after fit()). Exposed so callers that need the training
+        codes (e.g. LC-KSVD, which reuses this class on an augmented
+        system) don't have to re-run sparse coding.
+    errors_ : list of float
+        Per-iteration RMSE on the training data.
     """
 
     def __init__(
@@ -79,13 +97,20 @@ class KSVD(BaseDictionaryLearner):
 
         # Set after fit
         self.D_: np.ndarray | None = None
+        self.Gamma_: np.ndarray | None = None
         self.errors_: list[float] = []
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def fit(self, X: np.ndarray, D_init: np.ndarray | None = None) -> "KSVD":
+    def fit(
+        self,
+        X: np.ndarray,
+        D_init: np.ndarray | None = None,
+        checkpoint_dir: str | None = None,
+        resume: bool = True,
+    ) -> "KSVD":
         """
         Learn a dictionary from training signals.
 
@@ -94,7 +119,18 @@ class KSVD(BaseDictionaryLearner):
         X : np.ndarray, shape (n_features, n_samples)
         D_init : np.ndarray or None, shape (n_features, n_components)
             Optional initial dictionary.  If None, random training signals
-            are chosen as initial atoms.
+            are chosen as initial atoms.  Ignored when resuming from an
+            existing checkpoint.
+        checkpoint_dir : str or None
+            If given, a checkpoint is written to
+            ``<checkpoint_dir>/ksvd_checkpoint.npz`` after every iteration,
+            overwriting the previous one. The directory is created if it
+            does not exist.
+        resume : bool
+            If True (default) and a checkpoint is found in
+            ``checkpoint_dir``, training resumes from it. If False, any
+            existing checkpoint in ``checkpoint_dir`` is ignored and
+            overwritten.
 
         Returns
         -------
@@ -103,10 +139,37 @@ class KSVD(BaseDictionaryLearner):
         X = np.asarray(X, dtype=float)
         rng = np.random.RandomState(self.random_state)
 
-        D = self._init_dict(X, D_init, rng)
+        checkpoint_path = None
+        start_iter = 0
+        D = None
+        Gamma = None
+        unused = np.arange(X.shape[1])
+        replaced = np.zeros(self.n_components, dtype=bool)
         self.errors_ = []
 
-        for it in range(self.n_iter):
+        if checkpoint_dir is not None:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(checkpoint_dir, _CHECKPOINT_FILENAME)
+
+            if resume and os.path.exists(checkpoint_path):
+                (
+                    D,
+                    Gamma,
+                    unused,
+                    replaced,
+                    self.errors_,
+                    start_iter,
+                ) = self._load_checkpoint(checkpoint_path, X)
+                if self.verbose:
+                    print(
+                        f"Resuming from checkpoint at iteration {start_iter}/"
+                        f"{self.n_iter} ({checkpoint_path})"
+                    )
+
+        if D is None:
+            D = self._init_dict(X, D_init, rng)
+
+        for it in range(start_iter, self.n_iter):
             G = D.T @ D if self.mem_usage in ("high", "normal") else None
             Gamma = self._sparse_code(X, D, G)
 
@@ -127,7 +190,13 @@ class KSVD(BaseDictionaryLearner):
             if self.verbose:
                 print(f"Iter {it + 1}/{self.n_iter}  RMSE={err:.6f}")
 
+            if checkpoint_path is not None:
+                self._save_checkpoint(
+                    checkpoint_path, X, D, Gamma, unused, replaced, it + 1
+                )
+
         self.D_ = D
+        self.Gamma_ = Gamma
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
@@ -179,3 +248,97 @@ class KSVD(BaseDictionaryLearner):
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, D, G=G)
 
+    # ------------------------------------------------------------------
+    # Checkpointing
+    # ------------------------------------------------------------------
+
+    def _save_checkpoint(
+        self,
+        path: str,
+        X: np.ndarray,
+        D: np.ndarray,
+        Gamma: np.ndarray,
+        unused: np.ndarray,
+        replaced: np.ndarray,
+        completed_iter: int,
+    ) -> None:
+        """
+        Atomically write the training state to ``path``.
+
+        Written to a temp file in the same directory first, then moved
+        into place with os.replace, so an abrupt stop mid-write can never
+        leave a corrupt/truncated checkpoint at ``path``.
+        """
+        directory = os.path.dirname(path) or "."
+        fd, tmp_path = tempfile.mkstemp(
+            dir=directory, prefix=".ksvd_checkpoint_", suffix=".npz.tmp"
+        )
+        os.close(fd)
+        try:
+            np.savez(
+                tmp_path,
+                D=D,
+                Gamma=Gamma,
+                unused=unused,
+                replaced=replaced,
+                errors_=np.asarray(self.errors_, dtype=float),
+                completed_iter=completed_iter,
+                n_iter=self.n_iter,
+                n_components=self.n_components,
+                n_nonzero_coefs=self.n_nonzero_coefs,
+                n_features=X.shape[0],
+                n_samples=X.shape[1],
+            )
+            os.replace(tmp_path, path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def _load_checkpoint(self, path: str, X: np.ndarray):
+        """
+        Load and validate a checkpoint against the current config and X.
+
+        Raises DictionaryLearningError on any mismatch, rather than
+        silently resuming with an incompatible state.
+        """
+        with np.load(path) as data:
+            n_features = int(data["n_features"])
+            n_samples = int(data["n_samples"])
+            n_components = int(data["n_components"])
+            n_nonzero_coefs = int(data["n_nonzero_coefs"])
+            n_iter = int(data["n_iter"])
+            completed_iter = int(data["completed_iter"])
+
+            if (n_features, n_samples) != X.shape:
+                raise DictionaryLearningError(
+                    f"Checkpoint at {path} was computed on data of shape "
+                    f"{(n_features, n_samples)}, but X has shape {X.shape}."
+                )
+            if n_components != self.n_components:
+                raise DictionaryLearningError(
+                    f"Checkpoint n_components={n_components} does not match "
+                    f"KSVD.n_components={self.n_components}."
+                )
+            if n_nonzero_coefs != self.n_nonzero_coefs:
+                raise DictionaryLearningError(
+                    f"Checkpoint n_nonzero_coefs={n_nonzero_coefs} does not "
+                    f"match KSVD.n_nonzero_coefs={self.n_nonzero_coefs}."
+                )
+            if n_iter != self.n_iter:
+                raise DictionaryLearningError(
+                    f"Checkpoint was created with n_iter={n_iter}, but this "
+                    f"KSVD instance has n_iter={self.n_iter}."
+                )
+            if completed_iter >= self.n_iter:
+                raise DictionaryLearningError(
+                    f"Checkpoint at {path} already completed all "
+                    f"{self.n_iter} iterations; nothing to resume."
+                )
+
+            D = data["D"].copy()
+            Gamma = data["Gamma"].copy()
+            unused = data["unused"].copy()
+            replaced = data["replaced"].copy()
+            errors_ = list(data["errors_"])
+
+        return D, Gamma, unused, replaced, errors_, completed_iter

@@ -1,3 +1,8 @@
+"""
+lc_ksvd.utils
+Utility functions for LC-KSVD.
+"""
+
 import numpy as np
 
 from reppi.sparse.omp import OMP
@@ -63,9 +68,12 @@ def initialization4lcksvd(
     """
     Initialise D, A (label-consistency transform), W (classifier), and Q.
 
-    This mirrors the MATLAB ``initialization4LCKSVD`` step. A plain K-SVD is
-    run first, then a linear classifier W and label-consistent target Q are
-    estimated from the resulting sparse codes.
+    This mirrors the MATLAB ``initialization4LCKSVD`` step. A separate K-SVD
+    is run per class (each class contributing its allotted block of atoms,
+    trained only on its own samples), the per-class dictionaries are
+    concatenated, and a linear classifier W and label-consistent target Q
+    are then estimated from the sparse codes of the full training set
+    against this dictionary.
 
     Parameters
     ----------
@@ -76,7 +84,7 @@ def initialization4lcksvd(
     n_components : int
         Dictionary size.
     n_iter_init : int
-        K-SVD iterations for the initialisation run.
+        K-SVD iterations for the initialisation run (per class).
     n_nonzero_coefs : int
         Sparsity level T.
     random_state : int or None
@@ -92,18 +100,44 @@ def initialization4lcksvd(
     Q : np.ndarray, shape (n_components, n_samples)
         Label-consistent sparse code targets.
     """
-    # Step 1: standard K-SVD initialisation
-    ksvd = KSVD(
-        n_components=n_components,
-        n_nonzero_coefs=n_nonzero_coefs,
-        n_iter=n_iter_init,
-        random_state=random_state,
-        verbose=verbose,
-    )
-    ksvd.fit(X)
-    D_init = ksvd.D_
+    n_classes = H.shape[0]
 
-    # Step 2: sparse-code the training data with the initial dictionary
+    # Same atom allocation scheme as _build_label_consistent_target:
+    # even split across classes, remainder folded into the last class.
+    atoms_per_class = n_components // n_classes
+
+    # Step 1: per-class K-SVD initialisation
+    D_blocks = []
+    for c in range(n_classes):
+        n_atoms_c = (
+            atoms_per_class if c < n_classes - 1
+            else n_components - atoms_per_class * (n_classes - 1)
+        )
+        class_mask = H[c, :] > 0
+        X_c = X[:, class_mask]
+
+        class_random_state = (
+            None if random_state is None else random_state + c
+        )
+        ksvd_c = KSVD(
+            n_components=n_atoms_c,
+            n_nonzero_coefs=n_nonzero_coefs,
+            n_iter=n_iter_init,
+            random_state=class_random_state,
+            verbose=verbose,
+        )
+        ksvd_c.fit(X_c)
+        D_blocks.append(ksvd_c.D_)
+
+        if verbose:
+            print(
+                f"Class {c}: initialised {n_atoms_c} atoms from "
+                f"{X_c.shape[1]} samples."
+            )
+
+    D_init = np.hstack(D_blocks)
+
+    # Step 2: sparse-code the full training data with the initial dictionary
     coder = OMP(n_nonzero_coefs, mode="batch", check_dict=False)
     Gamma = coder.encode(X, D_init)
 

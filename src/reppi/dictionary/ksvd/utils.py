@@ -1,3 +1,9 @@
+"""
+ksvd.utils
+Utility functions for KSVD.
+"""
+
+
 import numpy as np
 
 from reppi.sparse.utils import rep_error_squared
