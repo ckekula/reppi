@@ -73,9 +73,10 @@ def omp_cholesky(
 
         # Solve (L L.T) c = Ds.T x
         rhs = Ds.T @ x
-        c = linalg.cho_solve(
-            (L[: k + 1, : k + 1], True), rhs
-        )
+
+        Lt = L[: k + 1, : k + 1]
+        y = linalg.solve_triangular(Lt, rhs, lower=True)
+        c = linalg.solve_triangular(Lt.T, y, lower=False)
         residual = x - Ds @ c
 
     gamma[support] = c
@@ -129,7 +130,9 @@ def batch_omp(
 
             # Solve (L L.T) c = DtX[support, i]
             rhs = dtx[support]
-            c = linalg.cho_solve((L[: k + 1, : k + 1], True), rhs)
+            Lt = L[: k + 1, : k + 1]
+            y = linalg.solve_triangular(Lt, rhs, lower=True)
+            c = linalg.solve_triangular(Lt.T, y, lower=False)
 
             # Update residual in projection space
             residual_proj = dtx - G[:, support] @ c

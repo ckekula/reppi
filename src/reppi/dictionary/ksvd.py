@@ -100,7 +100,7 @@ class KSVD(BaseDictionaryLearner):
         self
         """
         X = xp.asarray(X, dtype=float)
-        rng = xp.random.default_rng(self.random_state)
+        rng = xp.random.RandomState(self.random_state)
 
         D = self._init_dict(X, D_init, rng)
         self.errors_ = []
@@ -144,7 +144,7 @@ class KSVD(BaseDictionaryLearner):
         self,
         X: xp.ndarray,
         D_init: xp.ndarray | None,
-        rng: xp.random.Generator,
+        rng: xp.random.RandomState,
     ) -> xp.ndarray:
         n_features, n_samples = X.shape
         k = self.n_components
