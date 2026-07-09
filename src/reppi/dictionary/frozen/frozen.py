@@ -183,7 +183,8 @@ class IncrementalFrozenDictionary:
         self.W_ = _fit_classifier(Gamma, H)
 
         self._H_rows = H.shape[0]
-        self._X_all.append(X)
+        if self.refit_classifier or self.freeze_classifier:
+            self._X_all.append(X)
 
         return self
 
@@ -267,6 +268,12 @@ class IncrementalFrozenDictionary:
             resume=resume,
         )
 
+        # A_/W_ are ephemeral per stage (see discussion) — nothing downstream
+        # ever reads a prior stage's values, so drop them now rather than
+        # holding them in memory for the lifetime of the pipeline.
+        frozen_step.learner_.A_ = None
+        frozen_step.learner_.W_ = None
+        
         # The wrapped learner already returns the full [D_frozen | D_new]
         # dictionary and a merged class_boundaries_ (frozen entries
         # untouched, new class offset by n_frozen) — no manual hstack or
@@ -280,8 +287,17 @@ class IncrementalFrozenDictionary:
             getattr(frozen_step.learner_, "errors_", [])
         )
 
+        # self.D_ already holds its own reference to this array
+        # dropping these to free the now-superseded snapshots
+        # nothing downstream ever reads again (get_stage_dict/get_class_dict
+        # always slice the top-level self.D_, never these).
+        frozen_step.D_frozen = None
+        frozen_step.D_combined_ = None
+        frozen_step.learner_.D_ = None
+
         # Accumulate training data for W refit
-        self._X_all.append(X)
+        if self.refit_classifier or self.freeze_classifier:
+            self._X_all.append(X)
 
         # --- Refit W over all data and the full combined dict ---
         if self.refit_classifier:

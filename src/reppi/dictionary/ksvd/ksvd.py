@@ -232,7 +232,7 @@ class KSVD(BaseDictionaryLearner):
 
             if checkpoint_path is not None:
                 self._save_checkpoint(
-                    checkpoint_path, X, D, Gamma, unused, replaced, it + 1, n_frozen
+                    checkpoint_path, X, D, unused, replaced, it + 1, n_frozen
                 )
 
         self.D_ = D
@@ -308,7 +308,6 @@ class KSVD(BaseDictionaryLearner):
         path: str,
         X: np.ndarray,
         D: np.ndarray,
-        Gamma: np.ndarray,
         unused: np.ndarray,
         replaced: np.ndarray,
         completed_iter: int,
@@ -338,7 +337,6 @@ class KSVD(BaseDictionaryLearner):
                 np.savez(
                     f,
                     D=D,
-                    Gamma=Gamma,
                     unused=unused,
                     replaced=replaced,
                     errors_=np.asarray(self.errors_, dtype=float),
