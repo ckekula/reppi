@@ -31,7 +31,12 @@ where:
   A = linear mapping for Q-consistency
   W = linear classifier
   H = class label matrix (one-hot per column)
-  alpha, beta = trade-off weights
+  alpha, beta = trade-off weights (these are sqrt_alpha / sqrt_beta from
+      the paper's Eq. (11) — i.e. what you pass here is the value stacked
+      directly onto Q and H, NOT the paper's reported alpha/beta. To
+      reproduce a paper-reported setting such as alpha=4.0, beta=2.0
+      (extended YaleB / AR face, Sec. 6.1-6.2), pass
+      alpha=sqrt(4.0)=2.0, beta=sqrt(2.0)=~1.41 here.
 
 Implementation note
 --------------------
@@ -44,6 +49,26 @@ Each outer iteration here delegates to `KSVD` (with n_iter=1) on the
 augmented system and then splits the result back into D, A, W. This
 mirrors the construction in the original paper and keeps a single
 source of truth for the K-SVD atom-update step.
+
+Known limitation (fixed atom-class labels, Sec. 3.3.1 footnote 2)
+-------------------------------------------------------------------
+The paper assumes each atom's class label is fixed for the entire
+training run once initialised. In this implementation the inner `KSVD`
+instance still runs its own dead-atom / mutual-incoherence-based atom
+replacement heuristics (`_optimize_atom`'s dead-atom fallback and
+`_clear_dict`) every outer iteration, on the *augmented* system, without
+any notion of class. Those heuristics can therefore replace an atom
+with a signal from a different class than the one Q currently assigns
+it to, silently violating the paper's fixed-labelling assumption for
+that atom (Q is never rebuilt afterward, so its label-consistency target
+would then be stale for the rest of training). Reducing `mu_thresh`
+increases how often the incoherence-triggered path fires; the
+dead-atom fallback triggers regardless of `mu_thresh` whenever an
+atom's row in Gamma is entirely zero, and is not user-configurable at
+the KSVD level. This is a structural limitation of composing the
+generic KSVD atom-update/clearing logic with LC-KSVD's assumption, not
+something LC-KSVD's own code can fully prevent without changes to
+KSVD's atom-clearing routines.
 
 Note on frozen/incremental dictionary learning
 ------------------------------------------------
@@ -62,24 +87,35 @@ learner doesn't already give more simply — see the class discussion in
 
 Usage
 -----
-For LC-KSVD1::
+For LC-KSVD1, with the default ridge classifier::
 
     model = LCKSVD(
         n_components=570,
         n_nonzero_coefs=30,
-        alpha=4.0,
+        alpha=2.0,          # sqrt(4.0), matching the paper's alpha=4.0
         variant="lcksvd1",
     )
     model.fit(X_train, H_train)
     predictions = model.predict(X_test)
 
-For LC-KSVD2::
+For LC-KSVD1 with a custom classifier::
 
     model = LCKSVD(
         n_components=570,
         n_nonzero_coefs=30,
-        alpha=4.0,
-        beta=2.0,
+        alpha=2.0,
+        variant="lcksvd1",
+        classifier=MyClassifier(),   # any fit(Gamma, H) / predict(Gamma)
+    )
+    model.fit(X_train, H_train)
+
+For LC-KSVD2 (classifier is trained jointly; `classifier=` not accepted)::
+
+    model = LCKSVD(
+        n_components=570,
+        n_nonzero_coefs=30,
+        alpha=2.0,           # sqrt(4.0)
+        beta=1.4142,         # sqrt(2.0), matching the paper's beta=2.0
         variant="lcksvd2",
     )
     model.fit(X_train, H_train)
@@ -99,6 +135,7 @@ from reppi.sparse.utils import normalize_columns, rep_error_squared
 from reppi.dictionary.ksvd.ksvd import KSVD
 
 from reppi.dictionary.lc_ksvd.utils import initialization4lcksvd, _augment_data
+from reppi.dictionary.lc_ksvd.ridge import RidgeClassifier
 
 _CHECKPOINT_FILENAME = "lc_ksvd_checkpoint.npz"
 
@@ -114,7 +151,9 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
     n_nonzero_coefs : int
         Sparsity level T.
     alpha : float
-        Weight for the label-consistency term (sqrt_alpha in the paper).
+        Weight for the label-consistency term (this is sqrt_alpha in the
+        paper's Eq. (11) — see the module docstring for how it relates to
+        the paper's reported alpha values).
     beta : float
         Weight for the classifier term (sqrt_beta; LC-KSVD2 only).
     variant : {'lcksvd1', 'lcksvd2'}
@@ -126,7 +165,27 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
     exact_svd : bool
         Use exact SVD in the atom-update step (slower but slightly better).
     mu_thresh : float
-        Mutual-incoherence threshold (default 0.99).
+        Mutual-incoherence threshold (default 0.99). See the module
+        docstring's "Known limitation" section for how this interacts
+        with LC-KSVD's fixed atom-class labelling assumption.
+    lambda1 : float
+        Ridge weight for the classifier, Eq. (17) (default 1e-5). Used
+        both for W^(0) (LC-KSVD2's warm start) and, for LC-KSVD1, as the
+        default `RidgeClassifier`'s regularisation unless a `classifier`
+        override supplies its own.
+    lambda2 : float
+        Ridge weight for A^(0), Eq. (16) (default 1e-5).
+    classifier : object or None
+        Only valid when ``variant="lcksvd1"``. Any object exposing
+        ``fit(Gamma, H)`` / ``predict(Gamma)`` (see ``RidgeClassifier``),
+        trained once, after the dictionary has converged, on sparse codes
+        from the final D — per the paper's Sec. 3.2 ("the classifier W
+        for LC-KSVD1 is trained separately ... after D, A, and X are
+        computed"). If None, defaults to ``RidgeClassifier(lambda1)``.
+        Passing this for ``variant="lcksvd2"`` raises ``ValueError``,
+        since LC-KSVD2's classifier is trained jointly with the
+        dictionary as part of the augmented system and cannot be
+        substituted independently.
     random_state : int or None
     verbose : bool
 
@@ -134,8 +193,16 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
     ----------
     D_ : np.ndarray, shape (n_features, n_components)
         Learned dictionary.
-    W_ : np.ndarray, shape (n_classes, n_components)
-        Learned linear classifier weights.
+    W_ : np.ndarray or None, shape (n_classes, n_components)
+        Linear classifier weights. For LC-KSVD2, these are learned
+        jointly with the dictionary. For LC-KSVD1, these mirror
+        ``classifier_.W_`` when the fitted classifier exposes a linear
+        ``W_`` attribute (e.g. the default ``RidgeClassifier``); ``None``
+        if a custom classifier without a ``W_`` attribute was supplied —
+        use ``classifier_.predict()`` / ``predict()`` in that case.
+    classifier_ : object or None
+        The fitted classifier instance for LC-KSVD1 (``None`` for
+        LC-KSVD2, which uses ``W_`` directly).
     A_ : np.ndarray, shape (n_components, n_components)
         Learned label-consistency transform.
     errors_ : list of float
@@ -154,11 +221,20 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         n_iter_init: int = 20,
         exact_svd: bool = False,
         mu_thresh: float = 0.99,
+        lambda1: float = 1e-5,
+        lambda2: float = 1e-5,
+        classifier: object | None = None,
         random_state: int | None = None,
         verbose: bool = False,
     ) -> None:
         if variant not in ("lcksvd1", "lcksvd2"):
             raise ValueError("variant must be 'lcksvd1' or 'lcksvd2'.")
+        if classifier is not None and variant != "lcksvd1":
+            raise ValueError(
+                "classifier= is only valid for variant='lcksvd1'. "
+                "LC-KSVD2's classifier is trained jointly with the "
+                "dictionary and cannot be substituted independently."
+            )
         self.n_components = n_components
         self.n_nonzero_coefs = n_nonzero_coefs
         self.alpha = alpha
@@ -168,12 +244,16 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         self.n_iter_init = n_iter_init
         self.exact_svd = exact_svd
         self.mu_thresh = mu_thresh
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2
+        self.classifier = classifier
         self.random_state = random_state
         self.verbose = verbose
 
         self.D_: np.ndarray | None = None
         self.W_: np.ndarray | None = None
         self.A_: np.ndarray | None = None
+        self.classifier_: object | None = None
         self.errors_: list[float] = []
         self.class_boundaries_: dict[int, tuple[int, int]] | None = None
 
@@ -207,8 +287,10 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         A_init : np.ndarray or None
             Initial label-consistency transform. Ignored when resuming.
         W_init : np.ndarray or None
-            Initial classifier weights (required / used for LC-KSVD2).
-            Ignored when resuming.
+            Initial classifier weights (used to warm-start LC-KSVD2's
+            joint optimisation only; LC-KSVD1 trains its classifier
+            separately at the end regardless of this argument). Ignored
+            when resuming.
         Q : np.ndarray or None
             Label-consistent target matrix. Computed from H if None.
             Ignored when resuming.
@@ -264,6 +346,8 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
                     self.n_nonzero_coefs,
                     random_state=self.random_state,
                     verbose=self.verbose,
+                    lambda1=self.lambda1,
+                    lambda2=self.lambda2,
                 )
 
             D = normalize_columns(D_init.copy())
@@ -297,6 +381,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             verbose=False,
         )
 
+        Gamma = None
         for it in range(start_iter, self.n_iter):
 
             # ---- Build augmented dictionary ----
@@ -330,10 +415,27 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
         self.D_ = D
         self.A_ = A
-        self.W_ = W
+
+        # ---- Classifier ----
+        if self.variant == "lcksvd1":
+            # Paper Sec. 3.2: LC-KSVD1's classifier is trained separately,
+            # after D, A, X are computed — never jointly with the
+            # dictionary. Re-encode with the final, converged D.
+            clf = self.classifier if self.classifier is not None else RidgeClassifier(
+                lambda1=self.lambda1
+            )
+            Gamma_final = self.transform(X) if self.D_ is not None else Gamma
+            clf.fit(Gamma_final, H)
+            self.classifier_ = clf
+            # Mirror a linear W_ for convenience/back-compat when the
+            # fitted classifier exposes one (e.g. the default
+            # RidgeClassifier); None for classifiers that don't.
+            self.W_ = getattr(clf, "W_", None)
+        else:
+            self.W_ = W
+            self.classifier_ = None
 
         # Record per-class atom ranges matching _build_label_consistent_target
-        n_classes = H.shape[0]
         atoms_per_class = self.n_components // n_classes
         boundaries: dict[int, tuple[int, int]] = {}
         for c in range(n_classes):
@@ -487,9 +589,11 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
-        Classify test signals using the learned classifier W.
+        Classify test signals using the learned classifier.
 
-        The predicted class for each signal is the argmax of W @ gamma.
+        For LC-KSVD2, this is the argmax of ``W_ @ gamma``. For LC-KSVD1,
+        this delegates to the fitted ``classifier_`` (default
+        ``RidgeClassifier``, or a user-supplied ``classifier``).
 
         Parameters
         ----------
@@ -500,12 +604,21 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         labels : np.ndarray, shape (n_samples,)  integer class indices
         """
         self._check_fitted()
+        Gamma = self.transform(X)
+
+        if self.variant == "lcksvd1":
+            if self.classifier_ is None:
+                raise DictionaryLearningError(
+                    "No classifier is available. This should not happen "
+                    "for a successfully fit LC-KSVD1 model."
+                )
+            return self.classifier_.predict(Gamma)
+
         if self.W_ is None:
             raise DictionaryLearningError(
                 "Classifier W is not available. "
-                "Use variant='lcksvd2' or access sparse codes via transform()."
+                "Access sparse codes via transform() instead."
             )
-        Gamma = self.transform(X)
         scores = self.W_ @ Gamma          # (n_classes, n_samples)
         return np.argmax(scores, axis=0)
 
