@@ -22,6 +22,15 @@ def _optimize_atom(
 
     Mirrors the MATLAB ``optimize_atom`` function.
 
+    ``j`` is an absolute column index into the (possibly frozen+active)
+    dictionary ``D`` and into ``Gamma``'s rows. This function has no
+    frozen-atom awareness of its own — the caller is responsible for never
+    invoking it with ``j`` in the frozen range (see ``KSVD.fit``'s atom
+    loop, which iterates ``range(n_frozen, n_total)``). ``replaced`` must
+    therefore be sized to the *full* dictionary width so that
+    ``replaced[j]`` indexes correctly regardless of how many atoms are
+    frozen.
+
     Returns
     -------
     atom : np.ndarray, shape (n_features,)
@@ -81,11 +90,23 @@ def _clear_dict(
     unused_sigs: np.ndarray,
     replaced: np.ndarray,
     use_thresh: int = 4,
+    frozen_atoms: int = 0,
 ) -> tuple[np.ndarray, int]:
     """
     Replace rarely-used or highly-correlated atoms with high-error signals.
 
     Mirrors the MATLAB ``cleardict`` function.
+
+    Parameters
+    ----------
+    frozen_atoms : int
+        Number of leading columns of D to treat as frozen (never
+        replaced), matching the same convention as ``KSVD.fit``'s atom
+        loop. Coherence (``Gj``) is still computed against the full D —
+        an active atom too correlated with a *frozen* atom is still
+        flagged and replaced — only the frozen columns themselves are
+        exempt from being overwritten. Default 0 preserves the original,
+        non-frozen behaviour exactly.
 
     Returns
     -------
@@ -97,7 +118,7 @@ def _clear_dict(
     use_count = (np.abs(Gamma) > 1e-7).sum(axis=1)  # (n_atoms,)
     cleared = 0
 
-    for j in range(n_atoms):
+    for j in range(frozen_atoms, n_atoms):
         if len(unused_sigs) == 0:
             break
         Gj = D.T @ D[:, j]

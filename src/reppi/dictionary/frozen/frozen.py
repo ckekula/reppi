@@ -25,9 +25,11 @@ class IncrementalFrozenDictionary:
 
     2. ``add_class(X, H, class_label)``
        Learn a residual dictionary D_a for the new class on top of
-       the currently frozen dictionary [ D_n | D_a_1 | … ].
-       Only the new residual atoms are updated; all prior atoms are frozen.
-       The combined dictionary is extended in-place.
+       the currently frozen dictionary [ D_n | D_a_1 | … ], via
+       ``FrozenDictionaryLearner``. The underlying learner trains its new
+       atoms jointly alongside the frozen ones every iteration (not on a
+       one-shot residual — see ``BaseDiscriminativeDictionaryLearner``'s
+       frozen-dictionary contract and Carroll et al. 2017, Sec. III).
        W is re-learned over all classes after each addition.
 
     3. ``predict(X)`` / ``score(X, H)``
@@ -49,29 +51,30 @@ class IncrementalFrozenDictionary:
     so that interrupting and resuming an individual stage's training does
     not collide with any other stage's saved state. This only has an
     effect if the underlying ``base_learner_class`` /
-    ``residual_learner_class`` (e.g. KSVD, LCKSVD) support a
-    ``checkpoint_dir`` argument on their own ``fit()``; learners that
-    don't will simply ignore it being unset and train without
-    checkpointing.
+    ``residual_learner_class`` (e.g. LC-KSVD) support a ``checkpoint_dir``
+    argument on their own ``fit()``; learners that don't will simply
+    ignore it being unset and train without checkpointing.
 
     Parameters
     ----------
     base_learner_class : type[BaseDiscriminativeDictionaryLearner]
-        Learner used for the initial base dictionary.
+        Learner used for the initial base dictionary. Must accept H (and,
+        per the frozen-dictionary contract, D_frozen/frozen_class_boundaries
+        with default None) — i.e. a discriminative learner such as LCKSVD,
+        not a plain unsupervised learner like KSVD.
     base_learner_kwargs : dict
         Init kwargs for ``base_learner_class``.
     residual_learner_class : type[BaseDiscriminativeDictionaryLearner]
-        Learner used for each residual dictionary.  Can be the same as or
-        different from ``base_learner_class``.
+        Learner used for each residual dictionary, via
+        ``FrozenDictionaryLearner``.  Can be the same as or different from
+        ``base_learner_class``. Must support the frozen-dictionary
+        contract (accept and honour ``D_frozen``).
     residual_learner_kwargs : dict
         Init kwargs for ``residual_learner_class``.  Applied identically
         for every ``add_class`` call; override per-call via
         ``add_class(..., learner_kwargs_override=...)``.
     n_nonzero_coefs : int
         Sparsity level for all encoding steps.
-    learn_on_residual : bool
-        Passed through to ``FrozenDictionaryLearner`` at each step.
-        Default True.
     refit_classifier : bool
         Re-learn W over the full combined dict after each add_class.
         Default True (recommended — see module docstring).
@@ -88,8 +91,8 @@ class IncrementalFrozenDictionary:
     class_boundaries_ : dict[int, tuple[int, int]]
         Per-class atom ranges in the full combined D_.
     stage_learners_ : list
-        Fitted learner or FrozenDictionaryLearner from each stage,
-        in order (index 0 = base stage).
+        Fitted learner (base stage) or FrozenDictionaryLearner (each
+        add_class stage) from each stage, in order (index 0 = base stage).
     errors_ : dict[int, list[float]]
         Per-stage training RMSE curves keyed by class_label
         (key -1 for the base stage).
@@ -102,7 +105,6 @@ class IncrementalFrozenDictionary:
         residual_learner_class: type[BaseDiscriminativeDictionaryLearner],
         residual_learner_kwargs: dict,
         n_nonzero_coefs: int,
-        learn_on_residual: bool = True,
         refit_classifier: bool = True,
         freeze_classifier: bool = False,
     ) -> None:
@@ -111,7 +113,6 @@ class IncrementalFrozenDictionary:
         self.residual_learner_class = residual_learner_class
         self.residual_learner_kwargs = residual_learner_kwargs
         self.n_nonzero_coefs = n_nonzero_coefs
-        self.learn_on_residual = learn_on_residual
         self.refit_classifier = refit_classifier
         self.freeze_classifier = freeze_classifier
 
@@ -167,6 +168,8 @@ class IncrementalFrozenDictionary:
         if checkpoint_dir is not None:
             fit_kwargs["checkpoint_dir"] = os.path.join(checkpoint_dir, "base")
             fit_kwargs["resume"] = resume
+        # D_frozen / frozen_class_boundaries default to None on the base
+        # learner's fit() — there is nothing to freeze at this stage.
         learner.fit(X, H, **fit_kwargs)
 
         self.D_ = learner.D_
@@ -249,7 +252,6 @@ class IncrementalFrozenDictionary:
             learner_class=self.residual_learner_class,
             learner_kwargs=kwargs,
             n_nonzero_coefs=self.n_nonzero_coefs,
-            learn_on_residual=self.learn_on_residual,
             refit_classifier=False,  # we handle W ourselves below
         )
         stage_checkpoint_dir = (
@@ -265,14 +267,13 @@ class IncrementalFrozenDictionary:
             resume=resume,
         )
 
-        # --- Extend D_ and class_boundaries_ ---
-        n_prev = self.D_.shape[1]
-        D_active = frozen_step.learner_.D_
-        n_active = D_active.shape[1]
-        self.D_ = np.hstack([self.D_, D_active])
-
-        # Map new class atoms into the combined dictionary
-        self.class_boundaries_[class_label] = (n_prev, n_prev + n_active)
+        # The wrapped learner already returns the full [D_frozen | D_new]
+        # dictionary and a merged class_boundaries_ (frozen entries
+        # untouched, new class offset by n_frozen) — no manual hstack or
+        # boundary bookkeeping needed here.
+        n_active = frozen_step.n_active_
+        self.D_ = frozen_step.D_combined_
+        self.class_boundaries_ = dict(frozen_step.class_boundaries_)
         self.class_labels_.append(class_label)
         self.stage_learners_.append(frozen_step)
         self.errors_[class_label] = list(
@@ -289,7 +290,7 @@ class IncrementalFrozenDictionary:
             # for passing the full H including all previous classes
             self._refit_W(X_all, H)
         elif self.freeze_classifier:
-            self._extend_W_frozen(D_active.shape[1], H)
+            self._extend_W_frozen(n_active, H)
 
         return self
 
@@ -336,7 +337,9 @@ class IncrementalFrozenDictionary:
         Return the sub-dictionary learned at a given stage.
 
         Stage 0 is the base dictionary; stage k (k >= 1) is the k-th
-        residual dictionary.
+        residual dictionary (the atoms added by the k-th ``add_class``
+        call), recovered via that call's class_label boundary in the
+        final, accumulated ``class_boundaries_``.
 
         Parameters
         ----------
@@ -351,11 +354,10 @@ class IncrementalFrozenDictionary:
             raise IndexError(
                 f"stage must be in [0, {len(self.stage_learners_) - 1}], got {stage}."
             )
-        learner = self.stage_learners_[stage]
-        # Base stage: learner is a BaseDiscriminativeDictionaryLearner
-        if isinstance(learner, FrozenDictionaryLearner):
-            return learner.learner_.D_
-        return learner.D_
+        if stage == 0:
+            return self.stage_learners_[0].D_
+        class_label = self.class_labels_[stage - 1]
+        return self.get_class_dict(class_label)
 
     def get_class_dict(self, class_label: int) -> np.ndarray:
         """

@@ -1,9 +1,9 @@
-"""
-Base classes for representation learning algorithms.
-"""
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
+
 import numpy as np
+
 
 class BaseSparseCoder(ABC):
     """Abstract base class for sparse coding algorithms."""
@@ -81,6 +81,32 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
     typed against this base, so any conforming implementation can be plugged
     in without modification.
 
+    Frozen-dictionary contract
+    --------------------------
+    Subclasses must accept an optional ``D_frozen`` in ``fit()`` and honour
+    it exactly, since this is what lets ``FrozenDictionaryLearner`` /
+    ``IncrementalFrozenDictionary`` compose learners without knowing their
+    internals (see Carroll et al. 2017, "Frozen K-SVD" / "Frozen Alternating
+    Minimization", Sec. III, for the reference algorithm being generalised
+    here to arbitrary discriminative learners):
+
+    - Training signals must be sparse-coded *jointly* over the full
+      ``[D_frozen | D_new]`` dictionary at every iteration — never encode
+      against ``D_frozen`` alone and train ``D_new`` on a one-shot residual;
+      the two must be able to co-adapt every pass.
+    - ``D_frozen``'s columns must never be modified, not even at
+      initialisation (e.g. via a blanket re-normalisation of the whole
+      dictionary). They must be bit-for-bit identical in ``self.D_`` after
+      ``fit()`` to the ``D_frozen`` that was passed in.
+    - ``self.D_`` after ``fit()`` must be the **full combined** dictionary
+      (frozen columns followed by newly-learned columns), not just the new
+      atoms — downstream wrappers rely on this to avoid re-deriving the
+      combined dictionary themselves.
+    - ``self.class_boundaries_`` after ``fit()`` must include the
+      (unchanged) entries from ``frozen_class_boundaries`` plus boundaries
+      for any newly-learned classes, with the new entries' column ranges
+      offset by ``D_frozen.shape[1]``.
+
     Sub-dictionary contract
     -----------------------
     Each learner internally partitions the dictionary D into per-class blocks.
@@ -107,6 +133,8 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
         self,
         X: np.ndarray,
         H: np.ndarray,
+        D_frozen: np.ndarray | None = None,
+        frozen_class_boundaries: dict[int, tuple[int, int]] | None = None,
     ) -> "BaseDiscriminativeDictionaryLearner":
         """
         Learn a discriminative dictionary from labelled training data.
@@ -116,6 +144,17 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
         X : np.ndarray, shape (n_features, n_samples)
         H : np.ndarray, shape (n_classes, n_samples)
             One-hot label matrix.
+        D_frozen : np.ndarray or None, shape (n_features, n_frozen_atoms)
+            Pre-trained atoms from earlier incremental stages, held
+            constant throughout fitting. See the class docstring's
+            "Frozen-dictionary contract" for the requirements this
+            implies. Pass None (default) for ordinary, non-incremental
+            training — the frozen contract then has no effect.
+        frozen_class_boundaries : dict or None
+            ``class_boundaries_`` from earlier frozen stages. Must be
+            merged unchanged into ``self.class_boundaries_``, alongside
+            this call's own class boundaries offset by
+            ``D_frozen.shape[1]``. Ignored if ``D_frozen`` is None.
 
         Returns
         -------

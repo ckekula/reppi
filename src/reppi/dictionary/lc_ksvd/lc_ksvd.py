@@ -45,6 +45,19 @@ augmented system and then splits the result back into D, A, W. This
 mirrors the construction in the original paper and keeps a single
 source of truth for the K-SVD atom-update step.
 
+Frozen-atom support
+--------------------
+When ``D_frozen`` is supplied to ``fit()``, this class generalises
+Carroll et al. 2017's frozen-dictionary idea to LC-KSVD: ``D_frozen``'s
+atoms (and, since they live in the same augmented matrix, their
+corresponding A/W columns) are held constant while ``n_components`` new
+atoms are learned jointly alongside them every outer iteration. This is
+achieved by passing ``D_frozen`` straight through to the inner KSVD
+atom-updater on every call — freezing a column of the augmented
+dictionary automatically freezes the corresponding column of A and W too,
+since the atom-update loop simply never touches that column, regardless
+of which row-block (D, A, or W) it belongs to.
+
 Usage
 -----
 For LC-KSVD1::
@@ -80,6 +93,7 @@ import numpy as np
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP
+from reppi.sparse.omp.utils import _check_dict_normalized
 from reppi.sparse.utils import normalize_columns, rep_error_squared
 from reppi.dictionary.ksvd.ksvd import KSVD
 
@@ -95,7 +109,8 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
     Parameters
     ----------
     n_components : int
-        Number of dictionary atoms.
+        Number of dictionary atoms this instance learns. When ``D_frozen``
+        is supplied to ``fit()``, this is the count of *new* atoms only.
     n_nonzero_coefs : int
         Sparsity level T.
     alpha : float
@@ -117,15 +132,20 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
     Attributes
     ----------
-    D_ : np.ndarray, shape (n_features, n_components)
-        Learned dictionary.
-    W_ : np.ndarray, shape (n_classes, n_components)
+    D_ : np.ndarray, shape (n_features, n_frozen + n_components)
+        Learned dictionary. Includes any frozen atoms passed to ``fit()``
+        as its leading, unchanged columns.
+    W_ : np.ndarray, shape (n_classes, n_frozen + n_components)
         Learned linear classifier weights.
-    A_ : np.ndarray, shape (n_components, n_components)
+    A_ : np.ndarray, shape (n_frozen + n_components, n_frozen + n_components)
         Learned label-consistency transform.
     errors_ : list of float
         Per-iteration RMSE on training data (measured on the original,
-        un-augmented X).
+        un-augmented X, against the full combined dictionary).
+    class_boundaries_ : dict[int, tuple[int, int]]
+        Atom ranges per class in the full combined ``D_``. Includes any
+        ``frozen_class_boundaries`` passed to ``fit()`` unchanged, plus
+        this call's classes offset by the frozen atom count.
     """
 
     def __init__(
@@ -170,6 +190,8 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         self,
         X: np.ndarray,
         H: np.ndarray,
+        D_frozen: np.ndarray | None = None,
+        frozen_class_boundaries: dict[int, tuple[int, int]] | None = None,
         D_init: np.ndarray | None = None,
         A_init: np.ndarray | None = None,
         W_init: np.ndarray | None = None,
@@ -186,17 +208,33 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             Training signals.
         H : np.ndarray, shape (n_classes, n_samples)
             One-hot label matrix.
+        D_frozen : np.ndarray or None, shape (n_features, n_frozen_atoms)
+            Pre-trained atoms from earlier incremental stages, held
+            constant throughout fitting. Must already have unit-norm
+            columns (validated). Only the ``n_components`` new atoms
+            declared in ``__init__`` are learned; they are trained
+            jointly alongside the frozen ones every outer iteration (not
+            on a one-shot residual — see module docstring). ``self.D_``
+            after fitting is the full ``[D_frozen | D_new]`` dictionary.
+        frozen_class_boundaries : dict or None
+            ``class_boundaries_`` from earlier frozen stages. Merged
+            unchanged into ``self.class_boundaries_``, alongside this
+            call's own classes offset by ``D_frozen.shape[1]``. Ignored
+            if ``D_frozen`` is None.
         D_init : np.ndarray or None
-            Initial dictionary. If None, a K-SVD initialisation is run.
-            Ignored when resuming from an existing checkpoint.
+            Initial dictionary for the *new* atoms only (never includes
+            D_frozen). If None, a K-SVD initialisation is run. Ignored
+            when resuming from an existing checkpoint.
         A_init : np.ndarray or None
-            Initial label-consistency transform. Ignored when resuming.
+            Initial label-consistency transform, sized to the full
+            combined dictionary. Ignored when resuming.
         W_init : np.ndarray or None
-            Initial classifier weights (required / used for LC-KSVD2).
-            Ignored when resuming.
+            Initial classifier weights (required / used for LC-KSVD2),
+            sized to the full combined dictionary. Ignored when resuming.
         Q : np.ndarray or None
-            Label-consistent target matrix. Computed from H if None.
-            Ignored when resuming.
+            Label-consistent target matrix, sized to the full combined
+            dictionary. Computed from H (and D_frozen) if None. Ignored
+            when resuming.
         checkpoint_dir : str or None
             If given, a checkpoint of the *outer* LC-KSVD loop is written
             to ``<checkpoint_dir>/lc_ksvd_checkpoint.npz`` after every
@@ -218,6 +256,16 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         n_features, n_samples = X.shape
         n_classes = H.shape[0]
 
+        if D_frozen is not None:
+            D_frozen = np.asarray(D_frozen, dtype=float)
+            if D_frozen.shape[0] != n_features:
+                raise DictionaryLearningError(
+                    f"D_frozen has {D_frozen.shape[0]} features but X has "
+                    f"{n_features} features."
+                )
+            _check_dict_normalized(D_frozen)
+        n_frozen = 0 if D_frozen is None else D_frozen.shape[1]
+
         checkpoint_path = None
         start_iter = 0
         D = A = W = Q_loaded = None
@@ -230,7 +278,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             if resume and os.path.exists(checkpoint_path):
                 (
                     D, A, W, Q_loaded, self.errors_, start_iter,
-                ) = self._load_checkpoint(checkpoint_path, X, H)
+                ) = self._load_checkpoint(checkpoint_path, X, H, n_frozen, D_frozen)
                 if self.verbose:
                     print(
                         f"Resuming from checkpoint at outer iteration "
@@ -247,18 +295,20 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
                     self.n_components,
                     self.n_iter_init,
                     self.n_nonzero_coefs,
+                    D_frozen=D_frozen,
                     random_state=self.random_state,
                     verbose=self.verbose,
                 )
 
-            D = normalize_columns(D_init.copy())
+            D_active = normalize_columns(D_init.copy())
+            D = np.hstack([D_frozen, D_active]) if D_frozen is not None else D_active
             A = A_init.copy()
             W = W_init.copy()
         else:
             Q = Q_loaded
 
-        sqrt_alpha = self.alpha
-        sqrt_beta = self.beta
+        sqrt_alpha = np.sqrt(self.alpha)
+        sqrt_beta = np.sqrt(self.beta)
 
         use_classifier_term = (self.variant == "lcksvd2")
 
@@ -268,9 +318,12 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         H_aug = H if use_classifier_term else None
         X_aug, _, _ = _augment_data(X, Q, H_aug, sqrt_alpha, sqrt_beta)
 
-        # A single K-SVD instance, reused every outer iteration. Only
-        # D_init changes between calls (n_iter=1 each time), so the atom
-        # update / incoherence-clearing logic lives in exactly one place.
+        # A single K-SVD instance, reused every outer iteration, drives the
+        # atom update on the augmented system. Only n_components new atoms
+        # are ever updated — D_frozen (and hence its corresponding rows in
+        # the A/W blocks of D_aug) is passed through unchanged every call,
+        # so it is trained jointly with the new atoms rather than on a
+        # one-shot residual.
         atom_updater = KSVD(
             n_components=self.n_components,
             n_nonzero_coefs=self.n_nonzero_coefs,
@@ -289,9 +342,19 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             D_aug = self._build_aug_dict(D, A, W, sqrt_alpha, sqrt_beta, use_classifier_term)
             D_aug_norm = normalize_columns(D_aug)
 
+            D_aug_frozen = D_aug_norm[:, :n_frozen] if n_frozen > 0 else None
+            D_aug_active_init = D_aug_norm[:, n_frozen:]
+
             # ---- Sparse code + single atom-update pass on the augmented
-            #      system, delegated to KSVD ----
-            atom_updater.fit(X_aug, D_init=D_aug_norm, checkpoint_dir=None)
+            #      system, delegated to KSVD. Frozen columns (if any) are
+            #      passed through so they participate in the joint coding
+            #      but are never updated. ----
+            atom_updater.fit(
+                X_aug,
+                D_init=D_aug_active_init,
+                D_frozen=D_aug_frozen,
+                checkpoint_dir=None,
+            )
             D_aug_updated = atom_updater.D_
             Gamma = atom_updater.Gamma_
 
@@ -299,7 +362,16 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             D, A, W = self._split_aug_dict(
                 D_aug_updated, n_features, n_classes, sqrt_alpha, sqrt_beta, use_classifier_term
             )
-            D = normalize_columns(D)
+
+            # _split_aug_dict already re-normalises D's columns using the
+            # combined D/A/W column norm, which is mathematically
+            # self-cancelling for frozen columns (their D sub-block always
+            # comes back out exactly as D_frozen, given D_frozen itself is
+            # unit-norm) — but relying on that cancellation to hold exactly
+            # over many outer iterations invites floating-point drift.
+            # Hard-pin the frozen block to eliminate that risk entirely.
+            if n_frozen > 0:
+                D[:, :n_frozen] = D_frozen
 
             # ---- Track RMSE on original X ----
             err = float(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
@@ -310,21 +382,43 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
             if checkpoint_path is not None:
                 self._save_checkpoint(
-                    checkpoint_path, X, H, D, A, W, Q, it + 1
+                    checkpoint_path, X, H, D, A, W, Q, it + 1, n_frozen
                 )
 
         self.D_ = D
         self.A_ = A
-        self.W_ = W
 
-        # Record per-class atom ranges matching _build_label_consistent_target
-        n_classes = H.shape[0]
-        atoms_per_class = self.n_components // n_classes
-        boundaries: dict[int, tuple[int, int]] = {}
-        for c in range(n_classes):
-            start = c * atoms_per_class
-            end = start + atoms_per_class if c < n_classes - 1 else self.n_components
-            boundaries[c] = (start, end)
+        if use_classifier_term:
+            self.W_ = W
+        else:
+            # LC-KSVD1 has no classification-error term in its objective,
+            # so W is not learned jointly with D/A. _split_aug_dict
+            # only ever returns zeros for W when use_classifier_term is
+            # False, so it must be fit here instead.
+            coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
+            Gamma_final = coder.encode(X, D)
+            self.W_ = H @ np.linalg.pinv(Gamma_final)
+
+        # Record per-class atom ranges. Only classes with samples present
+        # in this call ("active classes") receive a share of this call's
+        # n_components new atoms — matching initialization4lcksvd /
+        # _build_label_consistent_target exactly, so Q's atom-class
+        # assignment and class_boundaries_ never disagree. Frozen classes'
+        # boundaries (from an earlier stage) are carried over unchanged.
+        active_classes = [c for c in range(n_classes) if np.any(H[c, :] > 0)]
+        n_active = len(active_classes)
+        atoms_per_class = self.n_components // n_active
+
+        boundaries: dict[int, tuple[int, int]] = (
+            dict(frozen_class_boundaries) if frozen_class_boundaries else {}
+        )
+        for i, c in enumerate(active_classes):
+            start_local = i * atoms_per_class
+            end_local = (
+                start_local + atoms_per_class if i < n_active - 1
+                else self.n_components
+            )
+            boundaries[c] = (n_frozen + start_local, n_frozen + end_local)
         self.class_boundaries_ = boundaries
 
         return self
@@ -343,6 +437,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         W: np.ndarray,
         Q: np.ndarray,
         completed_iter: int,
+        n_frozen: int,
     ) -> None:
         """
         Atomically write the outer LC-KSVD training state to ``path``.
@@ -355,34 +450,45 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         fd, tmp_path = tempfile.mkstemp(
             dir=directory, prefix=".lc_ksvd_checkpoint_", suffix=".npz.tmp"
         )
-        os.close(fd)
         try:
-            np.savez(
-                tmp_path,
-                D=D,
-                A=A,
-                W=W,
-                Q=Q,
-                errors_=np.asarray(self.errors_, dtype=float),
-                completed_iter=completed_iter,
-                n_iter=self.n_iter,
-                n_components=self.n_components,
-                n_nonzero_coefs=self.n_nonzero_coefs,
-                alpha=self.alpha,
-                beta=self.beta,
-                variant=self.variant,
-                n_features=X.shape[0],
-                n_samples=X.shape[1],
-                n_classes=H.shape[0],
-            )
+            # See KSVD._save_checkpoint for why this writes through the fd
+            # rather than passing tmp_path as a string to np.savez.
+            with os.fdopen(fd, "wb") as f:
+                np.savez(
+                    f,
+                    D=D,
+                    A=A,
+                    W=W,
+                    Q=Q,
+                    errors_=np.asarray(self.errors_, dtype=float),
+                    completed_iter=completed_iter,
+                    n_iter=self.n_iter,
+                    n_components=self.n_components,
+                    n_nonzero_coefs=self.n_nonzero_coefs,
+                    alpha=self.alpha,
+                    beta=self.beta,
+                    variant=self.variant,
+                    n_features=X.shape[0],
+                    n_samples=X.shape[1],
+                    n_classes=H.shape[0],
+                    n_frozen=n_frozen,
+                )
             os.replace(tmp_path, path)
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    def _load_checkpoint(self, path: str, X: np.ndarray, H: np.ndarray):
+    def _load_checkpoint(
+        self,
+        path: str,
+        X: np.ndarray,
+        H: np.ndarray,
+        n_frozen: int,
+        D_frozen: np.ndarray | None,
+    ):
         """
-        Load and validate a checkpoint against the current config, X, and H.
+        Load and validate a checkpoint against the current config, X, H,
+        and the frozen-dictionary configuration for this call.
 
         Raises DictionaryLearningError on any mismatch, rather than
         silently resuming with an incompatible state.
@@ -398,6 +504,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             beta = float(data["beta"])
             variant = str(data["variant"])
             completed_iter = int(data["completed_iter"])
+            n_frozen_ckpt = int(data["n_frozen"]) if "n_frozen" in data else 0
 
             if (n_features, n_samples) != X.shape:
                 raise DictionaryLearningError(
@@ -440,12 +547,31 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
                     f"Checkpoint at {path} already completed all "
                     f"{self.n_iter} outer iterations; nothing to resume."
                 )
+            if n_frozen_ckpt != n_frozen:
+                raise DictionaryLearningError(
+                    f"Checkpoint at {path} was trained with {n_frozen_ckpt} "
+                    f"frozen atoms, but this fit() call has n_frozen={n_frozen}."
+                )
 
             D = data["D"].copy()
             A = data["A"].copy()
             W = data["W"].copy()
             Q = data["Q"].copy()
             errors_ = list(data["errors_"])
+
+        if n_frozen > 0:
+            if D_frozen is None:
+                raise DictionaryLearningError(
+                    f"Checkpoint at {path} expects {n_frozen} frozen atoms, "
+                    "but D_frozen=None was passed to this fit() call."
+                )
+            if not np.allclose(D[:, :n_frozen], D_frozen, atol=1e-6):
+                raise DictionaryLearningError(
+                    f"Checkpoint at {path}'s frozen atoms do not match the "
+                    "D_frozen passed to this fit() call. Resuming would "
+                    "silently mix training states from different frozen "
+                    "dictionaries."
+                )
 
         return D, A, W, Q, errors_, completed_iter
 
@@ -459,7 +585,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
         Returns
         -------
-        Gamma : np.ndarray, shape (n_components, n_samples)
+        Gamma : np.ndarray, shape (n_frozen + n_components, n_samples)
         """
         self._check_fitted()
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
