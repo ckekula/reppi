@@ -295,7 +295,8 @@ class KSVD(BaseDictionaryLearner):
             return batch_omp(D.T @ X, G, self.n_nonzero_coefs)
         elif self.mem_usage == "low" and G is not None:
             coder = OMP(self.n_nonzero_coefs, mode="cholesky", check_dict=False)
-        coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
+        else:
+            coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, D, G=G)
 
     # ------------------------------------------------------------------

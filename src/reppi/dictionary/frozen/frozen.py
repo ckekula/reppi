@@ -291,7 +291,10 @@ class IncrementalFrozenDictionary:
             self._refit_W(X_all, H)
         elif self.freeze_classifier:
             self._extend_W_frozen(n_active, H)
-
+        else:
+            raise DictionaryLearningError(
+                "Either refit_classifier or freeze_classifier must be True."
+            )
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
