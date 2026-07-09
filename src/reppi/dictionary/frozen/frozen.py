@@ -4,7 +4,7 @@ import os
 
 import numpy as np
 
-from reppi.base import BaseDiscriminativeDictionaryLearner
+from reppi.base import BaseDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP
 
@@ -15,6 +15,17 @@ class IncrementalFrozenDictionary:
     """
     Incrementally learn class-specific residual dictionaries, freezing all
     previously learned atoms before training the next class.
+
+    Faithful to Carroll et al. 2017 ("Outlier Learning via Augmented
+    Frozen Dictionaries"): the underlying dictionary learner
+    (``base_learner_class`` / ``residual_learner_class``, e.g. ``KSVD``)
+    is unsupervised — it never sees class labels, only the training
+    signals for whichever single class is currently being added. All
+    per-class bookkeeping (``class_boundaries_``) and classification
+    (``W_``) live entirely at this level, on top of the finished combined
+    dictionary — exactly as in the paper, where the frozen dictionary
+    produces sparse-code features and an SVM (a linear classifier ``W``
+    here) is trained on those features as a separate step.
 
     Pipeline
     --------
@@ -28,9 +39,9 @@ class IncrementalFrozenDictionary:
        the currently frozen dictionary [ D_n | D_a_1 | … ], via
        ``FrozenDictionaryLearner``. The underlying learner trains its new
        atoms jointly alongside the frozen ones every iteration (not on a
-       one-shot residual — see ``BaseDiscriminativeDictionaryLearner``'s
-       frozen-dictionary contract and Carroll et al. 2017, Sec. III).
-       W is re-learned over all classes after each addition.
+       one-shot residual — see ``BaseDictionaryLearner``'s frozen-
+       dictionary contract and Carroll et al. 2017, Sec. III). W is
+       re-learned over all classes after each addition.
 
     3. ``predict(X)`` / ``score(X, H)``
        Classify using the full combined dictionary and the latest W.
@@ -42,29 +53,24 @@ class IncrementalFrozenDictionary:
     shaped, inner dictionary-learner instance. If a ``checkpoint_dir`` is
     given, this class therefore does NOT hand every stage the same path —
     doing so would cause the second stage's checkpoint load to fail (or,
-    worse, be silently wrong) since its X/H shapes differ from the first
+    worse, be silently wrong) since its X shape differs from the first
     stage's. Instead, each stage gets its own subdirectory:
 
         <checkpoint_dir>/base/           (fit_base)
         <checkpoint_dir>/class_<label>/  (add_class, per class_label)
 
     so that interrupting and resuming an individual stage's training does
-    not collide with any other stage's saved state. This only has an
-    effect if the underlying ``base_learner_class`` /
-    ``residual_learner_class`` (e.g. LC-KSVD) support a ``checkpoint_dir``
-    argument on their own ``fit()``; learners that don't will simply
-    ignore it being unset and train without checkpointing.
+    not collide with any other stage's saved state.
 
     Parameters
     ----------
-    base_learner_class : type[BaseDiscriminativeDictionaryLearner]
-        Learner used for the initial base dictionary. Must accept H (and,
-        per the frozen-dictionary contract, D_frozen/frozen_class_boundaries
-        with default None) — i.e. a discriminative learner such as LCKSVD,
-        not a plain unsupervised learner like KSVD.
+    base_learner_class : type[BaseDictionaryLearner]
+        Unsupervised learner used for the initial base dictionary, e.g.
+        ``KSVD``. Must accept ``D_frozen`` (default None) in its
+        ``fit()``, per the frozen-dictionary contract.
     base_learner_kwargs : dict
         Init kwargs for ``base_learner_class``.
-    residual_learner_class : type[BaseDiscriminativeDictionaryLearner]
+    residual_learner_class : type[BaseDictionaryLearner]
         Learner used for each residual dictionary, via
         ``FrozenDictionaryLearner``.  Can be the same as or different from
         ``base_learner_class``. Must support the frozen-dictionary
@@ -72,42 +78,50 @@ class IncrementalFrozenDictionary:
     residual_learner_kwargs : dict
         Init kwargs for ``residual_learner_class``.  Applied identically
         for every ``add_class`` call; override per-call via
-        ``add_class(..., learner_kwargs_override=...)``.
+        ``add_class(..., learner_kwargs_override=...)`` — e.g. to give
+        each class a different number of atoms.
     n_nonzero_coefs : int
-        Sparsity level for all encoding steps.
+        Sparsity level for all encoding steps at this level (W fitting /
+        refitting, predict, score, transform).
     refit_classifier : bool
         Re-learn W over the full combined dict after each add_class.
-        Default True (recommended — see module docstring).
+        Default True.
     freeze_classifier : bool
         If True, W columns for previously seen classes are frozen when a
         new class is added; only the new class's W column is learned.
-        Default False (re-learn all W columns jointly each time).
+        Default False (re-learn all W columns jointly each time). Exactly
+        one of ``refit_classifier`` / ``freeze_classifier`` must be True.
 
     Attributes
     ----------
     D_  : np.ndarray  full combined dictionary after all steps
     W_  : np.ndarray  current linear classifier
-    class_labels_ : list[int]  class labels in insertion order
+    class_labels_ : list[int]  class labels added via add_class, in order
     class_boundaries_ : dict[int, tuple[int, int]]
-        Per-class atom ranges in the full combined D_.
+        Per-class atom ranges in the full combined D_ (includes the base
+        stage's class label too).
     stage_learners_ : list
         Fitted learner (base stage) or FrozenDictionaryLearner (each
         add_class stage) from each stage, in order (index 0 = base stage).
     errors_ : dict[int, list[float]]
         Per-stage training RMSE curves keyed by class_label
-        (key -1 for the base stage).
+        (key -1 for the base stage, regardless of its class_label).
     """
 
     def __init__(
         self,
-        base_learner_class: type[BaseDiscriminativeDictionaryLearner],
+        base_learner_class: type[BaseDictionaryLearner],
         base_learner_kwargs: dict,
-        residual_learner_class: type[BaseDiscriminativeDictionaryLearner],
+        residual_learner_class: type[BaseDictionaryLearner],
         residual_learner_kwargs: dict,
         n_nonzero_coefs: int,
         refit_classifier: bool = True,
         freeze_classifier: bool = False,
     ) -> None:
+        if refit_classifier == freeze_classifier:
+            raise ValueError(
+                "Exactly one of refit_classifier / freeze_classifier must be True."
+            )
         self.base_learner_class = base_learner_class
         self.base_learner_kwargs = base_learner_kwargs
         self.residual_learner_class = residual_learner_class
@@ -119,14 +133,14 @@ class IncrementalFrozenDictionary:
         # State built incrementally
         self.D_: np.ndarray | None = None
         self.W_: np.ndarray | None = None
+        self.base_class_label_: int | None = None
         self.class_labels_: list[int] = []
         self.class_boundaries_: dict[int, tuple[int, int]] = {}
         self.stage_learners_: list = []
         self.errors_: dict[int, list[float]] = {}
 
-        # Internal: accumulated (X, H) across all classes for W refit
+        # Internal: accumulated X across all classes for W refit
         self._X_all: list[np.ndarray] = []
-        self._H_rows: int | None = None   # n_classes total
 
     # ------------------------------------------------------------------
     # Public API
@@ -136,6 +150,7 @@ class IncrementalFrozenDictionary:
         self,
         X: np.ndarray,
         H: np.ndarray,
+        class_label: int = 0,
         checkpoint_dir: str | None = None,
         resume: bool = True,
     ) -> "IncrementalFrozenDictionary":
@@ -146,7 +161,13 @@ class IncrementalFrozenDictionary:
         ----------
         X : np.ndarray, shape (n_features, n_samples)
         H : np.ndarray, shape (n_classes, n_samples)
-            One-hot labels for the base class(es).
+            One-hot labels for the base class(es). Used only to fit the
+            top-level classifier W — never passed to the (unsupervised)
+            base learner itself.
+        class_label : int
+            The class label this base dictionary's atoms are assigned to
+            in ``class_boundaries_`` (default 0). Must be distinct from
+            every ``class_label`` later passed to ``add_class``.
         checkpoint_dir : str or None
             If given, a ``base`` subdirectory under this path is passed to
             the base learner's own ``fit(..., checkpoint_dir=...)``, if it
@@ -168,23 +189,31 @@ class IncrementalFrozenDictionary:
         if checkpoint_dir is not None:
             fit_kwargs["checkpoint_dir"] = os.path.join(checkpoint_dir, "base")
             fit_kwargs["resume"] = resume
-        # D_frozen / frozen_class_boundaries default to None on the base
-        # learner's fit() — there is nothing to freeze at this stage.
-        learner.fit(X, H, **fit_kwargs)
+        # Unsupervised: no H, no D_frozen (nothing to freeze yet).
+        learner.fit(X, **fit_kwargs)
 
         self.D_ = learner.D_
-        self.class_boundaries_ = dict(learner.class_boundaries_ or {})
+        self.base_class_label_ = class_label
+        self.class_boundaries_ = {class_label: (0, learner.D_.shape[1])}
         self.stage_learners_.append(learner)
         self.errors_[-1] = list(getattr(learner, "errors_", []))
 
-        # Initialise W
+        # Initialise W over the base dictionary alone.
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         Gamma = coder.encode(X, self.D_)
         self.W_ = _fit_classifier(Gamma, H)
 
-        self._H_rows = H.shape[0]
         if self.refit_classifier or self.freeze_classifier:
             self._X_all.append(X)
+
+        # self.D_ already holds its own reference to the learned array;
+        # dropping the learner's copies frees nothing-else-reads-them
+        # state rather than holding it for the lifetime of the pipeline.
+        # get_stage_dict(0) slices self.D_ via class_boundaries_, not
+        # this attribute, so it stays correct after this.
+        learner.D_ = None
+        if hasattr(learner, "Gamma_"):
+            learner.Gamma_ = None
 
         return self
 
@@ -203,15 +232,20 @@ class IncrementalFrozenDictionary:
         Parameters
         ----------
         X : np.ndarray, shape (n_features, n_samples)
-            Training signals for this class.
-        H : np.ndarray, shape (n_classes_so_far + 1, n_samples)
+            Training signals for this class only. Presented unsupervised
+            to the residual learner — it never sees labels.
+        H : np.ndarray, shape (n_classes_so_far + 1, n_samples_so_far)
             One-hot label matrix for *all* classes seen so far including
-            the new one.  Used to refit W after extending the dictionary.
+            the new one, covering every column of every X passed to
+            ``fit_base``/``add_class`` so far (in that order). Used only
+            to refit W over the full combined dictionary.
         class_label : int
-            Integer label for this class.  Must not have been added before.
+            Integer label for this class.  Must not have been added
+            before, and must differ from the base stage's class_label.
         learner_kwargs_override : dict or None
             If supplied, overrides ``residual_learner_kwargs`` for this
-            call only.  Useful for adjusting n_components per class.
+            call only.  Useful for giving this class a different number
+            of atoms (e.g. ``{"n_components": 5}``).
         checkpoint_dir : str or None
             If given, a ``class_<class_label>`` subdirectory under this
             path is passed down to ``FrozenDictionaryLearner.fit()`` (and
@@ -232,21 +266,15 @@ class IncrementalFrozenDictionary:
             raise DictionaryLearningError(
                 "Call fit_base() before add_class()."
             )
-        if class_label in self.class_labels_:
+        if class_label in self.class_labels_ or class_label == self.base_class_label_:
             raise ValueError(
-                f"class_label {class_label} has already been added."
+                f"class_label {class_label} has already been used."
             )
 
         X = np.asarray(X, dtype=float)
         H = np.asarray(H, dtype=float)
 
         kwargs = {**self.residual_learner_kwargs, **(learner_kwargs_override or {})}
-
-        # The residual learner only sees X (n_samples for this class).
-        # Extract the H columns that correspond to X — the caller passes the
-        # full H over all accumulated data, but the learner needs H for X only.
-        n_new = X.shape[1]
-        H_for_learner = H[:, -n_new:]   # last n_new columns = this class's signals
 
         frozen_step = FrozenDictionaryLearner(
             D_frozen=self.D_,
@@ -262,22 +290,13 @@ class IncrementalFrozenDictionary:
         )
         frozen_step.fit(
             X,
-            H_for_learner,
+            H=None,
+            class_label=class_label,
             frozen_class_boundaries=dict(self.class_boundaries_),
             checkpoint_dir=stage_checkpoint_dir,
             resume=resume,
         )
 
-        # A_/W_ are ephemeral per stage (see discussion) — nothing downstream
-        # ever reads a prior stage's values, so drop them now rather than
-        # holding them in memory for the lifetime of the pipeline.
-        frozen_step.learner_.A_ = None
-        frozen_step.learner_.W_ = None
-        
-        # The wrapped learner already returns the full [D_frozen | D_new]
-        # dictionary and a merged class_boundaries_ (frozen entries
-        # untouched, new class offset by n_frozen) — no manual hstack or
-        # boundary bookkeeping needed here.
         n_active = frozen_step.n_active_
         self.D_ = frozen_step.D_combined_
         self.class_boundaries_ = dict(frozen_step.class_boundaries_)
@@ -287,13 +306,15 @@ class IncrementalFrozenDictionary:
             getattr(frozen_step.learner_, "errors_", [])
         )
 
-        # self.D_ already holds its own reference to this array
-        # dropping these to free the now-superseded snapshots
-        # nothing downstream ever reads again (get_stage_dict/get_class_dict
-        # always slice the top-level self.D_, never these).
+        # self.D_ already holds its own reference to this array — free the
+        # now-superseded snapshots nothing downstream ever reads again
+        # (get_stage_dict/get_class_dict always slice the top-level
+        # self.D_, never these).
         frozen_step.D_frozen = None
         frozen_step.D_combined_ = None
         frozen_step.learner_.D_ = None
+        if hasattr(frozen_step.learner_, "Gamma_"):
+            frozen_step.learner_.Gamma_ = None
 
         # Accumulate training data for W refit
         if self.refit_classifier or self.freeze_classifier:
@@ -305,12 +326,9 @@ class IncrementalFrozenDictionary:
             # H must cover all columns of X_all — caller is responsible
             # for passing the full H including all previous classes
             self._refit_W(X_all, H)
-        elif self.freeze_classifier:
-            self._extend_W_frozen(n_active, H)
         else:
-            raise DictionaryLearningError(
-                "Either refit_classifier or freeze_classifier must be True."
-            )
+            self._extend_W_frozen(n_active, H)
+
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -357,8 +375,10 @@ class IncrementalFrozenDictionary:
 
         Stage 0 is the base dictionary; stage k (k >= 1) is the k-th
         residual dictionary (the atoms added by the k-th ``add_class``
-        call), recovered via that call's class_label boundary in the
-        final, accumulated ``class_boundaries_``.
+        call). Both are recovered via ``class_boundaries_`` on the final,
+        accumulated ``D_`` — no per-stage dictionary snapshot is kept
+        alive for this (see the memory-efficiency notes in ``fit_base`` /
+        ``add_class``).
 
         Parameters
         ----------
@@ -374,7 +394,7 @@ class IncrementalFrozenDictionary:
                 f"stage must be in [0, {len(self.stage_learners_) - 1}], got {stage}."
             )
         if stage == 0:
-            return self.stage_learners_[0].D_
+            return self.get_class_dict(self.base_class_label_)
         class_label = self.class_labels_[stage - 1]
         return self.get_class_dict(class_label)
 

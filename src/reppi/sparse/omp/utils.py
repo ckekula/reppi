@@ -1,16 +1,6 @@
 import numpy as np
 
 from scipy import linalg
-from reppi.exceptions import DictionaryNormalizationError
-
-def _check_dict_normalized(D: np.ndarray, tol: float = 1e-2) -> None:
-    """Raise if any atom of D deviates from unit L2-norm by more than tol."""
-    norms = np.sqrt((D * D).sum(axis=0))
-    if np.any(np.abs(norms - 1.0) > tol):
-        raise DictionaryNormalizationError(
-            "Dictionary columns must be normalized to unit L2-norm. "
-            f"Got norms in range [{norms.min():.4f}, {norms.max():.4f}]."
-        )
 
 
 def omp_cholesky(

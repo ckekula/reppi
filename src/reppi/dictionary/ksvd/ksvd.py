@@ -232,7 +232,7 @@ class KSVD(BaseDictionaryLearner):
 
             if checkpoint_path is not None:
                 self._save_checkpoint(
-                    checkpoint_path, X, D, unused, replaced, it + 1, n_frozen
+                    checkpoint_path, X, D, Gamma, unused, replaced, it + 1, n_frozen
                 )
 
         self.D_ = D
@@ -293,10 +293,7 @@ class KSVD(BaseDictionaryLearner):
     ) -> np.ndarray:
         if self.mem_usage == "high" and G is not None:
             return batch_omp(D.T @ X, G, self.n_nonzero_coefs)
-        elif self.mem_usage == "low" and G is not None:
-            coder = OMP(self.n_nonzero_coefs, mode="cholesky", check_dict=False)
-        else:
-            coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
+        coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, D, G=G)
 
     # ------------------------------------------------------------------
@@ -308,6 +305,7 @@ class KSVD(BaseDictionaryLearner):
         path: str,
         X: np.ndarray,
         D: np.ndarray,
+        Gamma: np.ndarray,
         unused: np.ndarray,
         replaced: np.ndarray,
         completed_iter: int,
@@ -337,6 +335,7 @@ class KSVD(BaseDictionaryLearner):
                 np.savez(
                     f,
                     D=D,
+                    Gamma=Gamma,
                     unused=unused,
                     replaced=replaced,
                     errors_=np.asarray(self.errors_, dtype=float),

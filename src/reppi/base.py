@@ -29,10 +29,47 @@ class BaseSparseCoder(ABC):
 
 
 class BaseDictionaryLearner(ABC):
-    """Abstract base class for dictionary learning algorithms."""
+    """
+    Abstract base class for (unsupervised) dictionary learning algorithms.
+
+    Frozen-dictionary contract
+    --------------------------
+    Implementations that are usable as ``base_learner_class`` /
+    ``residual_learner_class`` in ``IncrementalFrozenDictionary`` (e.g.
+    ``KSVD``) must accept an optional ``D_frozen`` in ``fit()`` and honour
+    it exactly. This directly implements "Frozen K-SVD" / "Frozen
+    Alternating Minimization" as described in Carroll et al. 2017,
+    "Outlier Learning via Augmented Frozen Dictionaries", Sec. III —
+    freezing is a property of the dictionary-learning algorithm itself,
+    independent of any classifier or label information:
+
+    - Training signals must be sparse-coded *jointly* over the full
+      ``[D_frozen | D_new]`` dictionary at every iteration — never encode
+      against ``D_frozen`` alone and train ``D_new`` on a one-shot
+      residual; the two must be able to co-adapt every pass.
+    - ``D_frozen``'s columns must never be modified, not even at
+      initialisation (e.g. via a blanket re-normalisation of the whole
+      dictionary). They must be bit-for-bit identical in ``self.D_``
+      after ``fit()`` to the ``D_frozen`` that was passed in.
+    - ``self.D_`` after ``fit()`` must be the **full combined** dictionary
+      (frozen columns followed by newly-learned columns), not just the
+      new atoms — ``FrozenDictionaryLearner`` relies on this to avoid
+      re-deriving the combined dictionary itself.
+
+    Implementations that will never be used in a frozen/incremental
+    context (e.g. a one-shot, standalone dictionary learner) may omit
+    ``D_frozen`` support — it is optional at the Python level (default
+    None) precisely so non-frozen usage is unaffected.
+    """
 
     @abstractmethod
-    def fit(self, X: np.ndarray) -> "BaseDictionaryLearner":
+    def fit(
+        self,
+        X: np.ndarray,
+        D_frozen: np.ndarray | None = None,
+        checkpoint_dir: str | None = None,
+        resume: bool = True,
+    ) -> "BaseDictionaryLearner":
         """
         Learn a dictionary from training data.
 
@@ -40,6 +77,16 @@ class BaseDictionaryLearner(ABC):
         ----------
         X : np.ndarray, shape (n_features, n_samples)
             Training signals as columns.
+        D_frozen : np.ndarray or None, shape (n_features, n_frozen_atoms)
+            Pre-trained atoms to hold constant throughout fitting. See
+            the class docstring's "Frozen-dictionary contract". Pass
+            None (default) for ordinary, non-incremental training.
+        checkpoint_dir : str or None
+            Optional directory to checkpoint/resume training from, if
+            the implementation supports it.
+        resume : bool
+            Whether to resume from an existing checkpoint in
+            ``checkpoint_dir``, if one is found.
 
         Returns
         -------
@@ -71,46 +118,29 @@ class BaseDictionaryLearner(ABC):
 
 class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
     """
-    Abstract base class for discriminative dictionary learning algorithms.
+    Abstract base class for discriminative dictionary learning algorithms
+    (e.g. LC-KSVD, FDDL, LEDL, …).
 
-    Extends ``BaseDictionaryLearner`` with the labelled-fit interface and the
-    per-class sub-dictionary API required by the frozen dictionary framework.
-
-    All discriminative learners (LC-KSVD, FDDL, LEDL, …) must subclass this
-    and implement every abstract method.  The frozen/incremental wrappers are
-    typed against this base, so any conforming implementation can be plugged
-    in without modification.
-
-    Frozen-dictionary contract
-    --------------------------
-    Subclasses must accept an optional ``D_frozen`` in ``fit()`` and honour
-    it exactly, since this is what lets ``FrozenDictionaryLearner`` /
-    ``IncrementalFrozenDictionary`` compose learners without knowing their
-    internals (see Carroll et al. 2017, "Frozen K-SVD" / "Frozen Alternating
-    Minimization", Sec. III, for the reference algorithm being generalised
-    here to arbitrary discriminative learners):
-
-    - Training signals must be sparse-coded *jointly* over the full
-      ``[D_frozen | D_new]`` dictionary at every iteration — never encode
-      against ``D_frozen`` alone and train ``D_new`` on a one-shot residual;
-      the two must be able to co-adapt every pass.
-    - ``D_frozen``'s columns must never be modified, not even at
-      initialisation (e.g. via a blanket re-normalisation of the whole
-      dictionary). They must be bit-for-bit identical in ``self.D_`` after
-      ``fit()`` to the ``D_frozen`` that was passed in.
-    - ``self.D_`` after ``fit()`` must be the **full combined** dictionary
-      (frozen columns followed by newly-learned columns), not just the new
-      atoms — downstream wrappers rely on this to avoid re-deriving the
-      combined dictionary themselves.
-    - ``self.class_boundaries_`` after ``fit()`` must include the
-      (unchanged) entries from ``frozen_class_boundaries`` plus boundaries
-      for any newly-learned classes, with the new entries' column ranges
-      offset by ``D_frozen.shape[1]``.
+    These learners are trained with class labels and expose their own
+    classifier (``W_``) and per-class sub-dictionary structure
+    (``class_boundaries_``). They are standalone models — this base class
+    intentionally does NOT include the frozen-dictionary contract from
+    ``BaseDictionaryLearner``: composing a discriminative learner's own
+    per-class atom allocation and internal classifier with the frozen/
+    incremental framework's *own* per-class bookkeeping led to two
+    conflicting sources of truth for "which atoms belong to which class"
+    and "what is the classifier." ``IncrementalFrozenDictionary`` /
+    ``FrozenDictionaryLearner`` are therefore typed against
+    ``BaseDictionaryLearner`` (e.g. ``KSVD``) instead — matching the
+    original paper, where "Frozen K-SVD" freezes a plain, unsupervised
+    K-SVD dictionary, and classification (an SVM in the paper; a linear
+    classifier ``W`` here) is a separate step performed once, on top of
+    the finished combined dictionary.
 
     Sub-dictionary contract
     -----------------------
-    Each learner internally partitions the dictionary D into per-class blocks.
-    The mapping is recorded in ``class_boundaries_``, a dict of the form::
+    Each learner internally partitions the dictionary D into per-class
+    blocks, recorded in ``class_boundaries_``, a dict of the form::
 
         {class_idx: (col_start, col_end)}   # half-open slice [start, end)
 
@@ -124,17 +154,11 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
     class_boundaries_ : dict[int, tuple[int, int]]
     """
 
-    # ------------------------------------------------------------------
-    # Abstract interface every discriminative learner must implement
-    # ------------------------------------------------------------------
-
     @abstractmethod
     def fit(                                        # type: ignore[override]
         self,
         X: np.ndarray,
         H: np.ndarray,
-        D_frozen: np.ndarray | None = None,
-        frozen_class_boundaries: dict[int, tuple[int, int]] | None = None,
     ) -> "BaseDiscriminativeDictionaryLearner":
         """
         Learn a discriminative dictionary from labelled training data.
@@ -144,17 +168,6 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
         X : np.ndarray, shape (n_features, n_samples)
         H : np.ndarray, shape (n_classes, n_samples)
             One-hot label matrix.
-        D_frozen : np.ndarray or None, shape (n_features, n_frozen_atoms)
-            Pre-trained atoms from earlier incremental stages, held
-            constant throughout fitting. See the class docstring's
-            "Frozen-dictionary contract" for the requirements this
-            implies. Pass None (default) for ordinary, non-incremental
-            training — the frozen contract then has no effect.
-        frozen_class_boundaries : dict or None
-            ``class_boundaries_`` from earlier frozen stages. Must be
-            merged unchanged into ``self.class_boundaries_``, alongside
-            this call's own class boundaries offset by
-            ``D_frozen.shape[1]``. Ignored if ``D_frozen`` is None.
 
         Returns
         -------
@@ -194,7 +207,7 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
         raise NotImplementedError
 
     # ------------------------------------------------------------------
-    # Per-class sub-dictionary API (used by the frozen framework)
+    # Per-class sub-dictionary API
     # ------------------------------------------------------------------
 
     def get_class_dict(self, class_idx: int) -> np.ndarray:

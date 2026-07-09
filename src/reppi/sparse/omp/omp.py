@@ -11,7 +11,8 @@ from __future__ import annotations
 import numpy as np
 
 from reppi.base import BaseSparseCoder
-from reppi.sparse.omp.utils import _check_dict_normalized, omp_cholesky, batch_omp
+from reppi.sparse.utils import _check_dict_normalized
+from reppi.sparse.omp.utils import omp_cholesky, batch_omp
 
 class OMP(BaseSparseCoder):
     """

@@ -5,6 +5,8 @@ Utility functions shared across sparse coding algorithms.
 from __future__ import annotations
 
 import numpy as np
+from reppi.exceptions import DictionaryNormalizationError
+
 
 def normalize_columns(D: np.ndarray) -> np.ndarray:
     """Return D with each column scaled to unit L2-norm.
@@ -64,3 +66,13 @@ def rep_error_squared(
         diff = X[:, start:end] - D @ Gamma[:, start:end]
         err2[start:end] = (diff ** 2).sum(axis=0)
     return err2
+
+
+def _check_dict_normalized(D: np.ndarray, tol: float = 1e-2) -> None:
+    """Raise if any atom of D deviates from unit L2-norm by more than tol."""
+    norms = np.sqrt((D * D).sum(axis=0))
+    if np.any(np.abs(norms - 1.0) > tol):
+        raise DictionaryNormalizationError(
+            "Dictionary columns must be normalized to unit L2-norm. "
+            f"Got norms in range [{norms.min():.4f}, {norms.max():.4f}]."
+        )
