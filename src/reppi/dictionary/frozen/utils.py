@@ -1,3 +1,8 @@
+"""
+frozen.utils
+Utility functions for Frozen Dictionary Learning.
+"""
+
 import numpy as np
 
 def _fit_classifier(
