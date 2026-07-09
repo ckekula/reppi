@@ -29,7 +29,7 @@ import numpy as np
 from reppi.base import BaseDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP, batch_omp
-from reppi.sparse.omp.utils import _check_dict_normalized
+from reppi.sparse.utils import _check_dict_normalized
 from reppi.sparse.utils import col_norms_squared, normalize_columns, rep_error_squared
 
 from reppi.dictionary.ksvd.utils import _optimize_atom, _clear_dict
