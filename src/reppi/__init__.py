@@ -17,4 +17,4 @@ from reppi.sparse import OMP
 from reppi.dictionary import KSVD, LCKSVD, FrozenDictionaryLearner, IncrementalFrozenDictionary
 
 __all__ = ["OMP", "KSVD", "LCKSVD", "FrozenDictionaryLearner", "IncrementalFrozenDictionary"]
-__version__ = "0.1.15"
+__version__ = "0.1.16"
