@@ -14,7 +14,8 @@ dictionary
 """
 
 from reppi.sparse import OMP
+from reppi.sparse import FISTA
 from reppi.dictionary import KSVD, LCKSVD, FrozenDictionaryLearner, IncrementalFrozenDictionary
 
-__all__ = ["OMP", "KSVD", "LCKSVD", "FrozenDictionaryLearner", "IncrementalFrozenDictionary"]
+__all__ = ["OMP", "FISTA", "KSVD", "LCKSVD", "FrozenDictionaryLearner", "IncrementalFrozenDictionary"]
 __version__ = "0.1.23"
