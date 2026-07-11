@@ -184,6 +184,11 @@ class IncrementalFrozenDictionary:
         X = np.asarray(X, dtype=float)
         H = np.asarray(H, dtype=float)
 
+        if X.shape[1] < self.n_components:
+            raise DictionaryLearningError(
+                f"n_samples={X.shape[1]} is less than n_components={self.n_components}. "
+            )
+
         learner = self.base_learner_class(**self.base_learner_kwargs)
         fit_kwargs = {}
         if checkpoint_dir is not None:

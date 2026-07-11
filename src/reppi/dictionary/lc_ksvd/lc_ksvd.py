@@ -315,6 +315,11 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         n_features, n_samples = X.shape
         n_classes = H.shape[0]
 
+        if n_samples < self.n_components:
+            raise DictionaryLearningError(
+                f"n_samples={X.shape[1]} is less than n_components={self.n_components}. "
+            )
+
         checkpoint_path = None
         start_iter = 0
         D = A = W = Q_loaded = None

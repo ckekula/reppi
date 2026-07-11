@@ -174,6 +174,11 @@ class KSVD(BaseDictionaryLearner):
             _check_dict_normalized(D_frozen)
         n_frozen = 0 if D_frozen is None else D_frozen.shape[1]
 
+        if X.shape[1] < self.n_components:
+            raise DictionaryLearningError(
+                f"n_samples={X.shape[1]} is less than n_components={self.n_components}. "
+            )
+
         checkpoint_path = None
         start_iter = 0
         D = None
