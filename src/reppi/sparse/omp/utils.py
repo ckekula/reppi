@@ -92,20 +92,34 @@ def batch_omp(
         residual_proj = dtx.copy()
         support: list[int] = []
         L = np.zeros((n_nonzero, n_nonzero))
+        c = np.zeros(0)
 
         for k in range(n_nonzero):
             j = int(np.argmax(np.abs(residual_proj)))
-            support.append(j)
 
             # Cholesky update using Gram matrix
             if k == 0:
-                L[0, 0] = 1.0
+                l_new = 1.0
             else:
-                w = G[support[:-1], j]  # (k,)
+                w = G[support, j]  # (k,)
                 v = linalg.solve_triangular(L[:k, :k], w, lower=True)
-                l_new = np.sqrt(max(1.0 - float(v @ v), 1e-14))
+                diag_sq = 1.0 - float(v @ v)
+
+                # `j` is (numerically) linearly dependent on the atoms
+                # already in the support -- e.g. two near-duplicate or
+                # highly coherent dictionary atoms. Forcing the Cholesky
+                # update through with a near-zero/negative diagonal makes
+                # L blow up to # huge magnitudes, which overflows to inf
+                # /nan a few lines down in `G[:, support] @ c`. Stop
+                # growing the support for this signal instead of solving
+                # an ill-conditioned system.
+                if diag_sq < 1e-7:
+                    break
+
                 L[k, :k] = v
-                L[k, k] = l_new
+
+            L[k, k] = np.sqrt(diag_sq) if k > 0 else l_new
+            support.append(j)
 
             # Solve (L L.T) c = DtX[support, i]
             rhs = dtx[support]
@@ -116,7 +130,7 @@ def batch_omp(
             # Update residual in projection space
             residual_proj = dtx - G[:, support] @ c
 
+    if support:
         Gamma[support, i] = c
 
     return Gamma
-
