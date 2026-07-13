@@ -8,11 +8,10 @@ import numpy as np
 from reppi.sparse.omp.omp import OMP
 from reppi.dictionary.ksvd.ksvd import KSVD
 
+
 def _build_label_consistent_target(
     H: np.ndarray,
-    n_components: int,
-    n_nonzero_coefs: int,
-    sparse_codes: np.ndarray,
+    n_components: int
 ) -> np.ndarray:
     """
     Build the label-consistent target matrix Q.
@@ -64,6 +63,8 @@ def initialization4lcksvd(
     n_nonzero_coefs: int,
     random_state: int | None = None,
     verbose: bool = False,
+    lambda1: float = 1e-5,
+    lambda2: float = 1e-5,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Initialise D, A (label-consistency transform), W (classifier), and Q.
@@ -71,9 +72,14 @@ def initialization4lcksvd(
     This mirrors the MATLAB ``initialization4LCKSVD`` step. A separate K-SVD
     is run per class (each class contributing its allotted block of atoms,
     trained only on its own samples), the per-class dictionaries are
-    concatenated, and a linear classifier W and label-consistent target Q
-    are then estimated from the sparse codes of the full training set
-    against this dictionary.
+    concatenated, and A^(0) / W^(0) are estimated via ridge regression
+    (Jiang et al. 2011, Eqs. (16)-(17)) from the sparse codes of the full
+    training set against this dictionary.
+
+    Note: W^(0) computed here is only ever used as LC-KSVD2's *starting
+    point* for the joint optimisation loop. For LC-KSVD1, the final
+    classifier is trained separately after the dictionary has converged
+    (see ``LCKSVD.fit`` / ``RidgeClassifier``), per the paper's Sec. 3.2.
 
     Parameters
     ----------
@@ -89,6 +95,10 @@ def initialization4lcksvd(
         Sparsity level T.
     random_state : int or None
     verbose : bool
+    lambda1 : float
+        Ridge weight for W^(0), Eq. (17) (default 1e-5).
+    lambda2 : float
+        Ridge weight for A^(0), Eq. (16) (default 1e-5).
 
     Returns
     -------
@@ -142,14 +152,17 @@ def initialization4lcksvd(
     Gamma = coder.encode(X, D_init)
 
     # Step 3: build Q
-    Q = _build_label_consistent_target(H, n_components, n_nonzero_coefs, Gamma)
+    Q = _build_label_consistent_target(H, n_components)
 
-    # Step 4: fit W (classifier) via least squares: W * Gamma ≈ H
-    # W = H @ Gamma.T @ pinv(Gamma @ Gamma.T)
-    W_init = H @ np.linalg.pinv(Gamma)
+    # Step 4: fit W^(0) via ridge regression, Eq. (17):
+    #   W = H X^T (X X^T + lambda1 * I)^-1
+    gram_w = Gamma @ Gamma.T + lambda1 * np.eye(n_components)
+    W_init = H @ Gamma.T @ np.linalg.inv(gram_w)
 
-    # Step 5: fit A (label-consistency map) via least squares: A * Gamma ≈ Q
-    A_init = Q @ np.linalg.pinv(Gamma)
+    # Step 5: fit A^(0) via ridge regression, Eq. (16):
+    #   A = Q X^T (X X^T + lambda2 * I)^-1
+    gram_a = Gamma @ Gamma.T + lambda2 * np.eye(n_components)
+    A_init = Q @ Gamma.T @ np.linalg.inv(gram_a)
 
     return D_init, A_init, W_init, Q
 
@@ -172,8 +185,8 @@ def _augment_data(
     The combined objective is minimised by stacking the data matrices:
 
         Y_aug = [ X        ]       D_aug = [ D  ]
-                [ α * Q    ]               [ α A]
-                [ β * H    ]               [ β W]   (LC-KSVD2 only)
+                [ sqrt_alpha * Q ]          [ sqrt_alpha A]
+                [ sqrt_beta * H  ]          [ sqrt_beta W]   (LC-KSVD2 only)
 
     This augmentation lets the standard K-SVD atom-update step
     simultaneously minimise reconstruction, label-consistency, and

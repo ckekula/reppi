@@ -33,7 +33,7 @@ from reppi.dictionary.bcd.utils import bcd_dictionary_update, update_forgetting_
 from reppi.dictionary.ksvd.utils import _clear_dict
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.utils import _check_dict_normalized
-from reppi.sparse.lars.lasso import LARS
+from reppi.sparse.lars.lasso import LARSLasso
 from reppi.sparse.utils import col_norms_squared, normalize_columns, rep_error_squared
 
 _CHECKPOINT_FILENAME = "bcd_checkpoint.npz"
@@ -220,7 +220,7 @@ class BCD(BaseDictionaryLearner):
             A = np.zeros((n_total, n_total))
             B = np.zeros((n_features, n_total))
 
-        coder = LARS(alpha=lambda_used, check_dict=False)
+        coder = LARSLasso(alpha=lambda_used, check_dict=False)
         Gamma = None
 
         for epoch in range(start_epoch, self.n_iter):
@@ -273,7 +273,7 @@ class BCD(BaseDictionaryLearner):
         """Encode X using the learned dictionary."""
         if self.D_ is None:
             raise DictionaryLearningError("Call fit() before transform().")
-        coder = LARS(alpha=self.lambda_used_, check_dict=False)
+        coder = LARSLasso(alpha=self.lambda_used_, check_dict=False)
         return coder.encode(X, self.D_)
 
     # ------------------------------------------------------------------
