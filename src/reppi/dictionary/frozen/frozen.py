@@ -8,7 +8,7 @@ from reppi.base import BaseDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP
 
-from reppi.dictionary.frozen.utils import _fit_classifier
+from reppi.dictionary.frozen.utils import _completed_ksvd_checkpoint, _fit_classifier
 from reppi.dictionary.frozen.residual_learner import FrozenDictionaryLearner
 
 class IncrementalFrozenDictionary:
@@ -191,11 +191,30 @@ class IncrementalFrozenDictionary:
 
         learner = self.base_learner_class(**self.base_learner_kwargs)
         fit_kwargs = {}
+        base_checkpoint_dir = None
         if checkpoint_dir is not None:
-            fit_kwargs["checkpoint_dir"] = os.path.join(checkpoint_dir, "base")
+            base_checkpoint_dir = os.path.join(checkpoint_dir, "base")
+            fit_kwargs["checkpoint_dir"] = base_checkpoint_dir
             fit_kwargs["resume"] = resume
-        # Unsupervised: no H, no D_frozen (nothing to freeze yet).
-        learner.fit(X, **fit_kwargs)
+
+        loaded = (
+            _completed_ksvd_checkpoint(
+                base_checkpoint_dir,
+                X,
+                n_components=self.base_learner_kwargs.get("n_components"),
+                n_nonzero_coefs=self.base_learner_kwargs.get("n_nonzero_coefs"),
+                n_iter=self.base_learner_kwargs.get("n_iter"),
+                n_frozen=0,
+                D_frozen=None,
+            )
+            if resume
+            else None
+        )
+        if loaded is not None:
+            learner.D_, learner.Gamma_, learner.errors_ = loaded
+        else:
+            # Unsupervised: no H, no D_frozen (nothing to freeze yet).
+            learner.fit(X, **fit_kwargs)
 
         self.D_ = learner.D_
         self.base_class_label_ = class_label

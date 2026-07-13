@@ -6,7 +6,7 @@ from reppi.base import BaseDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP
 
-from reppi.dictionary.frozen.utils import _fit_classifier
+from reppi.dictionary.frozen.utils import _completed_ksvd_checkpoint, _fit_classifier
 
 class FrozenDictionaryLearner:
     """
@@ -132,12 +132,30 @@ class FrozenDictionaryLearner:
         X = np.asarray(X, dtype=float)
 
         learner = self.learner_class(**self.learner_kwargs)
-        learner.fit(
-            X,
-            D_frozen=self.D_frozen,
-            checkpoint_dir=checkpoint_dir,
-            resume=resume,
+
+        loaded = (
+            _completed_ksvd_checkpoint(
+                checkpoint_dir,
+                X,
+                n_components=self.learner_kwargs.get("n_components"),
+                n_nonzero_coefs=self.learner_kwargs.get("n_nonzero_coefs"),
+                n_iter=self.learner_kwargs.get("n_iter"),
+                n_frozen=self.n_frozen_,
+                D_frozen=self.D_frozen,
+            )
+            if resume
+            else None
         )
+        if loaded is not None:
+            learner.D_, learner.Gamma_, learner.errors_ = loaded
+        else:
+            learner.fit(
+                X,
+                D_frozen=self.D_frozen,
+                checkpoint_dir=checkpoint_dir,
+                resume=resume,
+            )
+
         self.learner_ = learner
 
         if learner.D_.shape[1] <= self.n_frozen_:
