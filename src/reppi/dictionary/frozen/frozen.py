@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import time
 import os
 import numpy as np
 import logging
@@ -227,11 +226,9 @@ class IncrementalFrozenDictionary:
             "Encoding %d samples over D_ (%d atoms) to fit classifier...",
             X.shape[1], self.D_.shape[1],
         )
-        t0 = time.time()
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         Gamma = coder.encode(X, self.D_)
         self.W_ = _fit_classifier(Gamma, H)
-        logger.info("Classifier fit in %.1fs.", time.time() - t0)
 
         if self.refit_classifier or self.freeze_classifier:
             self._X_all.append(X)

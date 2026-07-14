@@ -84,6 +84,7 @@ class OMP(BaseSparseCoder):
             if G is None:
                 G = D.T @ D
             DtX = D.T @ X
+            logger.debug("Encoding %d signals with dictionary of shape %s using Batch-OMP: %g", X.shape[1], D.shape, DtX.shape)
             return batch_omp(DtX, G, T)
 
         # cholesky mode — signal by signal
@@ -91,7 +92,7 @@ class OMP(BaseSparseCoder):
         n_samples = X.shape[1]
         Gamma = np.zeros((n_atoms, n_samples))
         for i in range(n_samples):
+            logger.debug("Encoding signal %d/%d with dictionary of shape %s using OMP-Cholesky", i + 1, n_samples, D.shape)
             Gamma[:, i] = omp_cholesky(D, X[:, i], T)    
 
-        logger.debug("Encoded %d signals with dictionary of shape %s using OMP: %g)", n_samples, D.shape, Gamma.shape)        
         return Gamma
