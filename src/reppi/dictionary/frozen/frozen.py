@@ -188,6 +188,8 @@ class IncrementalFrozenDictionary:
         H = np.asarray(H, dtype=float)
 
         learner = self.base_learner_class(**self.base_learner_kwargs)
+        logger.info("Fitting base dictionary with %d samples and %d features using %s", X.shape[1], X.shape[0], self.base_learner_class.__name__)
+
         fit_kwargs = {}
         base_checkpoint_dir = None
         if checkpoint_dir is not None:
@@ -303,6 +305,7 @@ class IncrementalFrozenDictionary:
         H = np.asarray(H, dtype=float)
 
         kwargs = {**self.residual_learner_kwargs, **(learner_kwargs_override or {})}
+        logger.info("Adding class %d with %d samples and %d features using %s", class_label, X.shape[1], X.shape[0], self.residual_learner_class.__name__)
 
         frozen_step = FrozenDictionaryLearner(
             D_frozen=self.D_,

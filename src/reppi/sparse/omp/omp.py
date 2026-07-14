@@ -9,10 +9,13 @@ Implements Batch-OMP as described in:
 from __future__ import annotations
 
 import numpy as np
+import logging
 
 from reppi.base import BaseSparseCoder
 from reppi.sparse.utils import _check_dict_normalized
 from reppi.sparse.omp.utils import omp_cholesky, batch_omp
+
+logger = logging.getLogger(__name__)
 
 class OMP(BaseSparseCoder):
     """
@@ -88,5 +91,7 @@ class OMP(BaseSparseCoder):
         n_samples = X.shape[1]
         Gamma = np.zeros((n_atoms, n_samples))
         for i in range(n_samples):
-            Gamma[:, i] = omp_cholesky(D, X[:, i], T)
+            Gamma[:, i] = omp_cholesky(D, X[:, i], T)    
+
+        logger.debug("Encoded %d signals with dictionary of shape %s using OMP: %g)", n_samples, D.shape, Gamma.shape)        
         return Gamma

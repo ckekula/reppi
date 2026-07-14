@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-
+import logging
 import numpy as np
 
 from reppi.base import BaseDictionaryLearner
@@ -36,6 +36,7 @@ from reppi.dictionary.ksvd.utils import _optimize_atom, _clear_dict
 
 _CHECKPOINT_FILENAME = "ksvd_checkpoint.npz"
 
+logger = logging.getLogger(__name__)
 
 class KSVD(BaseDictionaryLearner):
     """
@@ -95,7 +96,7 @@ class KSVD(BaseDictionaryLearner):
         mu_thresh: float = 0.99,
         mem_usage: str = "normal",
         random_state: int | None = None,
-        verbose: bool = False,
+        verbose: bool = True,
     ) -> None:
         if mem_usage not in ("high", "normal", "low"):
             raise ValueError("mem_usage must be 'high', 'normal', or 'low'.")
@@ -199,7 +200,7 @@ class KSVD(BaseDictionaryLearner):
                     start_iter,
                 ) = self._load_checkpoint(checkpoint_path, X, n_frozen, D_frozen)
                 if self.verbose:
-                    print(
+                    logger.info(
                         f"Resuming from checkpoint at iteration {start_iter}/"
                         f"{self.n_iter} ({checkpoint_path})"
                     )
@@ -233,7 +234,7 @@ class KSVD(BaseDictionaryLearner):
             )
 
             if self.verbose:
-                print(f"Iter {it + 1}/{self.n_iter}  RMSE={err:.6f}")
+                logger.info(f"Iter {it + 1}/{self.n_iter}  RMSE={err:.6f}")
 
             if checkpoint_path is not None:
                 self._save_checkpoint(
@@ -248,6 +249,7 @@ class KSVD(BaseDictionaryLearner):
         """Encode X using the learned dictionary."""
         if self.D_ is None:
             raise DictionaryLearningError("Call fit() before transform().")
+        logger.debug("Sparse Coding %d signals with learned dictionary of shape %s", X.shape[1], self.D_.shape)
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, self.D_)
 
@@ -298,6 +300,7 @@ class KSVD(BaseDictionaryLearner):
     ) -> np.ndarray:
         if self.mem_usage == "high" and G is not None:
             return batch_omp(D.T @ X, G, self.n_nonzero_coefs)
+        logger.debug("Sparse coding %d signals with dictionary of shape %s", X.shape[1], D.shape)
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, D, G=G)
 
