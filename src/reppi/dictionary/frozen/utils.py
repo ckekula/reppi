@@ -15,25 +15,6 @@ logger = logging.getLogger(__name__)
 _KSVD_CHECKPOINT_FILENAME = "ksvd_checkpoint.npz"
 
 
-def _fit_classifier(
-    Gamma: np.ndarray,
-    H: np.ndarray,
-) -> np.ndarray:
-    """
-    Fit a linear classifier W via least squares: W @ Gamma ≈ H.
-
-    Parameters
-    ----------
-    Gamma : np.ndarray, shape (n_atoms, n_samples)
-    H     : np.ndarray, shape (n_classes, n_samples)  one-hot
-
-    Returns
-    -------
-    W : np.ndarray, shape (n_classes, n_atoms)
-    """
-    return H @ np.linalg.pinv(Gamma)
-
-
 def _completed_ksvd_checkpoint(
     checkpoint_dir: str | None,
     X: np.ndarray,
