@@ -97,7 +97,6 @@ def batch_omp(
         L = np.zeros((n_nonzero, n_nonzero))
 
         for k in range(n_nonzero):
-            logger.debug("  Iteration %d/%d for signal %d", k + 1, n_nonzero, i + 1)
             j = int(np.argmax(np.abs(residual_proj)))
             support.append(j)
 
@@ -120,7 +119,6 @@ def batch_omp(
             # Update residual in projection space
             residual_proj = dtx - G[:, support] @ c
 
-        logger.info("Finished encoding signal %d/%d", i + 1, n_samples)
         Gamma[support, i] = c
 
     return Gamma

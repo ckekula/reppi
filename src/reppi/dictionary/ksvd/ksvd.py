@@ -249,7 +249,7 @@ class KSVD(BaseDictionaryLearner):
         """Encode X using the learned dictionary."""
         if self.D_ is None:
             raise DictionaryLearningError("Call fit() before transform().")
-        logger.debug("Sparse Coding %d signals with learned dictionary of shape %s", X.shape[1], self.D_.shape)
+        logger.info("Sparse Coding %d signals with learned dictionary of shape %s", X.shape[1], self.D_.shape)
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, self.D_)
 
@@ -300,7 +300,7 @@ class KSVD(BaseDictionaryLearner):
     ) -> np.ndarray:
         if self.mem_usage == "high" and G is not None:
             return batch_omp(D.T @ X, G, self.n_nonzero_coefs)
-        logger.debug("Sparse coding %d signals with dictionary of shape %s", X.shape[1], D.shape)
+        logger.info("Sparse coding %d signals with dictionary of shape %s", X.shape[1], D.shape)
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, D, G=G)
 
