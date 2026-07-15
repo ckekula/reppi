@@ -25,6 +25,7 @@ import os
 import tempfile
 import logging
 import numpy as np
+from tqdm import tqdm
 
 from reppi.base import BaseDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
@@ -210,19 +211,44 @@ class KSVD(BaseDictionaryLearner):
             D = np.hstack([D_frozen, D_active]) if D_frozen is not None else D_active
 
         n_total = D.shape[1]
+        if n_frozen > 0:
+            D_frozen_cols = D[:, :n_frozen]
+            G_ff = D_frozen_cols.T @ D_frozen_cols
+            DtX_frozen = D_frozen_cols.T @ X
+        else:
+            G_ff = None
+            DtX_frozen = None
+        
         unused = np.arange(X.shape[1])
         replaced = np.zeros(n_total, dtype=bool)
 
         for it in range(start_iter, self.n_iter):
-            G = D.T @ D if self.mem_usage in ("high", "normal") else None
-            Gamma = self._sparse_code(X, D, G)
+            if self.mem_usage in ("high", "normal"):
+                D_active = D[:, n_frozen:]
+                DtX_active = D_active.T @ X
+                G_aa = D_active.T @ D_active
+
+                G = np.empty((n_total, n_total))
+                DtX = np.empty((n_total, X.shape[1]))
+                if n_frozen > 0:
+                    G_fa = D_frozen_cols.T @ D_active
+                    G[:n_frozen, :n_frozen] = G_ff
+                    G[:n_frozen, n_frozen:] = G_fa
+                    G[n_frozen:, :n_frozen] = G_fa.T
+                    DtX[:n_frozen, :] = DtX_frozen
+                G[n_frozen:, n_frozen:] = G_aa
+                DtX[n_frozen:, :] = DtX_active
+            else:
+                G = None
+                DtX = None
+
+            Gamma = self._sparse_code(X, D, G, DtX)            
             R = X - D @ Gamma
 
             unused = np.arange(X.shape[1])
             replaced = np.zeros(n_total, dtype=bool)
 
-            for j in range(n_frozen, n_total):
-                logger.info(f"Updating atom {j}")
+            for j in tqdm(range(n_frozen, n_total), desc="Updating atoms"):
                 D[:, j], gamma_j, idx, unused, replaced = _optimize_atom(
                     X, D, R, j, Gamma, unused, replaced, self.exact_svd
                 )
@@ -297,12 +323,15 @@ class KSVD(BaseDictionaryLearner):
         X: np.ndarray,
         D: np.ndarray,
         G: np.ndarray | None,
+        DtX: np.ndarray | None = None,
     ) -> np.ndarray:
         if self.mem_usage == "high" and G is not None:
-            return batch_omp(D.T @ X, G, self.n_nonzero_coefs)
+            if DtX is None:
+                DtX = D.T @ X
+            return batch_omp(DtX, G, self.n_nonzero_coefs)
         logger.info("Sparse coding %d signals with dictionary of shape %s", X.shape[1], D.shape)
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
-        return coder.encode(X, D, G=G)
+        return coder.encode(X, D, G=G, DtX=DtX)
 
     # ------------------------------------------------------------------
     # Checkpointing

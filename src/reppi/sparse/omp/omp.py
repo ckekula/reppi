@@ -53,6 +53,7 @@ class OMP(BaseSparseCoder):
         X: np.ndarray,
         D: np.ndarray,
         G: np.ndarray | None = None,
+        DtX: np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Compute sparse codes for each column of X.
@@ -83,7 +84,8 @@ class OMP(BaseSparseCoder):
         if self.mode == "batch":
             if G is None:
                 G = D.T @ D
-            DtX = D.T @ X
+            if DtX is None:
+                DtX = D.T @ X
             logger.info("Encoding %d signals with dictionary of shape %s using Batch-OMP: %g", X.shape[1], D.shape, DtX.shape)
             return batch_omp(DtX, G, T)
 
