@@ -275,7 +275,6 @@ class IncrementalFrozenDictionary:
         )
         frozen_step.fit(
             X,
-            H=None,
             class_label=class_label,
             frozen_class_boundaries=dict(self.class_boundaries_),
             checkpoint_dir=stage_checkpoint_dir,

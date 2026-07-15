@@ -5,12 +5,15 @@ Utility functions for KSVD.
 
 
 import numpy as np
+import logging
+from tqdm import tqdm
 
-from reppi.sparse.utils import rep_error_squared
+logger = logging.getLogger(__name__)
 
 def _optimize_atom(
     X: np.ndarray,
     D: np.ndarray,
+    R: np.ndarray,
     j: int,
     Gamma: np.ndarray,
     unused_sigs: np.ndarray,
@@ -44,14 +47,17 @@ def _optimize_atom(
 
     # --- Dead atom: replace with the worst-reconstructed unused signal ---
     if len(data_indices) == 0:
+        logger.info(f"Replacing dead atom {j} with a high-error signal")
         max_signals = 5000
+        
         perm = np.random.permutation(len(unused_sigs))[:min(max_signals, len(unused_sigs))]
         candidates = unused_sigs[perm]
-        E = rep_error_squared(X, D, Gamma, block_size=len(candidates) + 1)
-        best = int(np.argmax(E[candidates]))
+        err = (R[:, candidates] ** 2).sum(axis=0)
+        best = int(np.argmax(err))
         atom = X[:, candidates[best]]
         atom = atom / max(np.linalg.norm(atom), 1e-14)
         gamma_j = np.zeros(len(data_indices))
+        
         # Remove used signal from the pool
         mask = np.ones(len(unused_sigs), dtype=bool)
         mask[perm[best]] = False
@@ -60,18 +66,17 @@ def _optimize_atom(
         return atom, gamma_j, data_indices, unused_sigs, replaced
 
     # --- Normal update ---
-    small_gamma = Gamma[:, data_indices]       # (n_atoms, |support|)
     g_j = Gamma[j, data_indices]              # (|support|,)
 
     # Residual matrix: remove atom j's contribution then add it back
-    # E = X[:,support] - D*small_gamma + d_j * g_j
-    E = X[:, data_indices] - D @ small_gamma + np.outer(D[:, j], g_j)
+    logger.info(f"Optimizing atom {j} with {len(data_indices)} signals")
+    E = R[:, data_indices] + np.outer(D[:, j], g_j)
 
     if exact_svd:
         # Exact update via rank-1 SVD
         U, s, Vt = np.linalg.svd(E, full_matrices=False)
         atom = U[:, 0]
-        gamma_j = s[0] * Vt[0, :]
+        gamma_j = atom @ E  # (|support|,)
     else:
         # Approximate update (alternating optimisation)
         atom = E @ g_j
@@ -79,6 +84,7 @@ def _optimize_atom(
         atom = atom / max(atom_norm, 1e-14)
         gamma_j = atom @ E  # (|support|,)
 
+    R[:, data_indices] = E - np.outer(atom, gamma_j)
     return atom, gamma_j, data_indices, unused_sigs, replaced
 
 
@@ -86,6 +92,7 @@ def _clear_dict(
     D: np.ndarray,
     Gamma: np.ndarray,
     X: np.ndarray,
+    R: np.ndarray,
     mu_thresh: float,
     unused_sigs: np.ndarray,
     replaced: np.ndarray,
@@ -114,11 +121,11 @@ def _clear_dict(
     cleared : int  number of atoms replaced
     """
     n_atoms = D.shape[1]
-    err = rep_error_squared(X, D, Gamma)
+    err = (R ** 2).sum(axis=0)
     use_count = (np.abs(Gamma) > 1e-7).sum(axis=1)  # (n_atoms,)
     cleared = 0
 
-    for j in range(frozen_atoms, n_atoms):
+    for j in tqdm(range(frozen_atoms, n_atoms), desc="Clearing dictionary"):
         if len(unused_sigs) == 0:
             break
         Gj = D.T @ D[:, j]

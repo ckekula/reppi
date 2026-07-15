@@ -1,12 +1,13 @@
 [project]
 name = "reppi"
-version = "0.1.35"
+version = "0.1.36"
 readme = "README.md"
 description = "A modular Python toolkit for sparse representation-based learning/classification algorithms"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.4.4",
     "scipy>=1.17.1",
+    "tqdm>=4.68.4",
 ]
 
 [build-system]

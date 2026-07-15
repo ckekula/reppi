@@ -30,7 +30,7 @@ from reppi.base import BaseDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP, batch_omp
 from reppi.sparse.utils import _check_dict_normalized
-from reppi.sparse.utils import col_norms_squared, normalize_columns, rep_error_squared
+from reppi.sparse.utils import col_norms_squared, normalize_columns
 
 from reppi.dictionary.ksvd.utils import _optimize_atom, _clear_dict
 
@@ -216,25 +216,25 @@ class KSVD(BaseDictionaryLearner):
         for it in range(start_iter, self.n_iter):
             G = D.T @ D if self.mem_usage in ("high", "normal") else None
             Gamma = self._sparse_code(X, D, G)
+            R = X - D @ Gamma
 
             unused = np.arange(X.shape[1])
             replaced = np.zeros(n_total, dtype=bool)
 
             for j in range(n_frozen, n_total):
+                logger.info(f"Updating atom {j}")
                 D[:, j], gamma_j, idx, unused, replaced = _optimize_atom(
-                    X, D, j, Gamma, unused, replaced, self.exact_svd
+                    X, D, R, j, Gamma, unused, replaced, self.exact_svd
                 )
                 Gamma[j, idx] = gamma_j
 
-            err = float(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
+            err = float(np.sqrt((R ** 2).sum() / X.size))
             self.errors_.append(err)
+            logger.info(f"Iter {it + 1}/{self.n_iter}  RMSE={err:.6f}")
 
             D, _ = _clear_dict(
-                D, Gamma, X, self.mu_thresh, unused, replaced, frozen_atoms=n_frozen
+                D, Gamma, X, R, self.mu_thresh, unused, replaced, frozen_atoms=n_frozen
             )
-
-            if self.verbose:
-                logger.info(f"Iter {it + 1}/{self.n_iter}  RMSE={err:.6f}")
 
             if checkpoint_path is not None:
                 self._save_checkpoint(

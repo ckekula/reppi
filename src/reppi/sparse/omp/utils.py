@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-
+from tqdm import tqdm
 from scipy import linalg
 
 logger = logging.getLogger(__name__)
@@ -89,8 +89,7 @@ def batch_omp(
     n_atoms, n_samples = DtX.shape
     Gamma = np.zeros((n_atoms, n_samples))
 
-    for i in range(n_samples):
-        logger.info("Encoding signal %d/%d with Batch-OMP", i + 1, n_samples)
+    for i in tqdm(range(n_samples), desc="Processing samples with Batch-OMP"):
         dtx = DtX[:, i]
         residual_proj = dtx.copy()
         support: list[int] = []
