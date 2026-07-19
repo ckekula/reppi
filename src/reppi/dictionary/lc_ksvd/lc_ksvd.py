@@ -70,21 +70,6 @@ generic KSVD atom-update/clearing logic with LC-KSVD's assumption, not
 something LC-KSVD's own code can fully prevent without changes to
 KSVD's atom-clearing routines.
 
-Note on frozen/incremental dictionary learning
-------------------------------------------------
-This class is a standalone discriminative dictionary learner and is NOT
-used by ``IncrementalFrozenDictionary`` / ``FrozenDictionaryLearner`` —
-those are built around plain, unsupervised ``KSVD`` instead, matching the
-original "Frozen K-SVD" paper (Carroll et al. 2017) exactly: a fresh,
-unsupervised dictionary is learned per class with prior classes' atoms
-frozen, and classification is a separate linear-classifier step fit once
-over the finished combined dictionary. LC-KSVD's per-call classifier term
-has no way to see more than one class's data at a time in that setting
-(each residual stage only ever presents one class), so composing it with
-frozen dictionary learning doesn't add anything a plain unsupervised
-learner doesn't already give more simply — see the class discussion in
-``reppi.base.BaseDiscriminativeDictionaryLearner`` for the full reasoning.
-
 Usage
 -----
 For LC-KSVD1, with the default ridge classifier::

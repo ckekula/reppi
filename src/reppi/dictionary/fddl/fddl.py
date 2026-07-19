@@ -59,6 +59,8 @@ from __future__ import annotations
 import os
 
 import numpy as np
+from tqdm import tqdm
+import logging
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.dictionary.bcd.utils import bcd_dictionary_update
@@ -68,13 +70,15 @@ from reppi.sparse.utils import _check_dict_normalized, normalize_columns
 from reppi.dictionary.fddl.classify import fit_class_means, gc_classify, lc_classify
 from reppi.dictionary.fddl.coding import solve_class_codes
 from reppi.dictionary.fddl.utils import (
-    OtherClassStats,
+    GlobalMeanTracker,
     block_boundaries,
     build_di_update_system,
     fidelity_value,
     global_fisher_value,
     resolve_atoms_per_class,
 )
+
+logger = logging.getLogger(__name__)
 
 _CHECKPOINT_FILENAME = "fddl_checkpoint.npz"
 
@@ -300,10 +304,12 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
 
         D_full = np.hstack(D_list)
 
-        for it in range(start_iter, self.n_iter):
+        for it in tqdm(range(start_iter, self.n_iter), desc="FDDL iterations"):
             # ---- Step 2 (Eq. 7): update X class-by-class, D fixed ----
+            tracker = GlobalMeanTracker(X_list, sizes)
             for i in range(n_classes):
-                stats = OtherClassStats(X_list, sizes, exclude=i)
+                logger.info(f"Updating class {i} codes")
+                stats = tracker.exclude(i)
                 Xi_new, _, _ = solve_class_codes(
                     X_list[i],
                     i,
@@ -319,14 +325,15 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
                     tol=self.coding_tol,
                 )
                 X_list[i] = Xi_new
+                tracker.update(i, Xi_new)
 
             # ---- Step 3 (Eq. 8): update D class-by-class, X fixed ----
+            X_full_stacked = np.hstack(X_list)
             for i in range(n_classes):
-                Y_stack, Z_stack = build_di_update_system(
-                    i, D_list, X_list, A_list, atom_boundaries
+                logger.info(f"Updating class {i} dictionary")
+                A_stat, B_stat = build_di_update_system(
+                    i, D_list, X_list, A_list, atom_boundaries, X_full_stacked=X_full_stacked
                 )
-                A_stat = Z_stack @ Z_stack.T
-                B_stat = Y_stack @ Z_stack.T
                 Di_updated = bcd_dictionary_update(
                     D_list[i], A_stat, B_stat, 0, self.dict_max_iter, self.dict_tol
                 )

@@ -86,7 +86,7 @@ class OMP(BaseSparseCoder):
                 G = D.T @ D
             if DtX is None:
                 DtX = D.T @ X
-            logger.info("Encoding %d signals with dictionary of shape %s using Batch-OMP: %g", X.shape[1], D.shape, DtX.shape)
+            logger.info("Encoding %d signals with dictionary of shape %s using Batch-OMP", X.shape[1], D.shape)
             return batch_omp(DtX, G, T)
 
         # cholesky mode — signal by signal

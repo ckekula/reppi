@@ -69,7 +69,6 @@ def _optimize_atom(
     g_j = Gamma[j, data_indices]              # (|support|,)
 
     # Residual matrix: remove atom j's contribution then add it back
-    logger.info(f"Optimizing atom {j} with {len(data_indices)} signals")
     E = R[:, data_indices] + np.outer(D[:, j], g_j)
 
     if exact_svd:
