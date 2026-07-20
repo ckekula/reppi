@@ -111,18 +111,22 @@ def fidelity_value(
     Xi: np.ndarray,
     i: int,
     D_list: Sequence[np.ndarray],
-    D_full: np.ndarray,
     Ai: np.ndarray,
     atom_boundaries: dict[int, tuple[int, int]],
 ) -> float:
     """r(Ai, D, Xi) of Eq. (4), as a function of Xi with D fixed."""
-    val = float(np.sum((Ai - D_full @ Xi) ** 2))
-    s, e = atom_boundaries[i]
-    val += float(np.sum((Ai - D_list[i] @ Xi[s:e, :]) ** 2))
+    recon = np.zeros_like(Ai)
+    val = 0.0
+    Di_recon = None
     for k, (s, e) in atom_boundaries.items():
+        Pk = D_list[k] @ Xi[s:e, :]
+        recon += Pk
         if k == i:
-            continue
-        val += float(np.sum((D_list[k] @ Xi[s:e, :]) ** 2))
+            Di_recon = Pk
+        else:
+            val += float(np.sum(Pk ** 2))
+    val += float(np.sum((Ai - recon) ** 2))       # replaces D_full @ Xi
+    val += float(np.sum((Ai - Di_recon) ** 2))
     return val
 
 
@@ -322,9 +326,10 @@ def global_fisher_value(X_list: Sequence[np.ndarray], eta: float) -> float:
     means = [Xk.mean(axis=1) for Xk in X_list]
     m = sum(sizes[k] * means[k] for k in range(len(X_list))) / n
 
-    sw = sum(float(np.sum((Xk - mk[:, None]) ** 2)) for Xk, mk in zip(X_list, means))
+    sq_norms = [float(np.sum(Xk ** 2)) for Xk in X_list]  # shared by sw & reg
+    sw = sum(sq_norms[k] - sizes[k] * float(means[k] @ means[k]) for k in range(len(X_list)))
     sb = sum(sizes[k] * float(np.sum((means[k] - m) ** 2)) for k in range(len(X_list)))
-    reg = sum(float(np.sum(Xk ** 2)) for Xk in X_list)
+    reg = sum(sq_norms)
     return sw - sb + eta * reg
 
 
@@ -334,13 +339,13 @@ def global_fisher_value(X_list: Sequence[np.ndarray], eta: float) -> float:
 
 def build_di_update_system(
     i: int,
-    D_list: Sequence[np.ndarray],
-    X_list: Sequence[np.ndarray],
+    D_i: np.ndarray,
+    D_full_sum: np.ndarray,
     A_list: Sequence[np.ndarray],
     atom_boundaries: dict[int, tuple[int, int]],
-    X_full_stacked: np.ndarray | None = None,
-    A_full: np.ndarray | None = None,
-    sample_boundaries: dict[int, tuple[int, int]] | None = None,
+    X_full_stacked: np.ndarray,
+    A_full: np.ndarray,
+    sample_boundaries: dict[int, tuple[int, int]],
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Build the sufficient statistics (A_stat, B_stat) whose solution
@@ -399,28 +404,13 @@ def build_di_update_system(
         Sufficient statistics for the dictionary update, shapes
         (p_i, p_i) and (n_features, p_i).
     """
-    if A_full is None:
-        A_full = np.hstack(A_list)
-    n_features, n_samples = A_full.shape
-    if sample_boundaries is None:
-        sample_boundaries = block_boundaries([Ak.shape[1] for Ak in A_list])
+    s, e = atom_boundaries[i]
+    X_i_full = X_full_stacked[s:e, :]  # X^i, shape (p_i, n_samples)
 
-    if X_full_stacked is None:
-        X_full_stacked = np.hstack(X_list)
+    # Exclude class i's own contribution from the running full sum.
+    R = A_full - D_full_sum + D_i @ X_i_full
 
-    def row_block(k: int) -> np.ndarray:
-        s, e = atom_boundaries[k]
-        return X_full_stacked[s:e, :]
-
-    Dj_sum = np.zeros((n_features, n_samples))
-    for j, Dj in enumerate(D_list):
-        if j == i:
-            continue
-        Dj_sum += Dj @ row_block(j)
-    R = A_full - Dj_sum
-
-    s, e = sample_boundaries[i]
-    X_i_full = row_block(i)  # X^i, shape (p_i, n_samples)
+    s2, e2 = sample_boundaries[i]
     A_stat = 2.0 * (X_i_full @ X_i_full.T)
-    B_stat = R @ X_i_full.T + A_list[i] @ X_i_full[:, s:e].T
+    B_stat = R @ X_i_full.T + A_list[i] @ X_i_full[:, s2:e2].T
     return A_stat, B_stat

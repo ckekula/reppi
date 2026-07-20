@@ -50,7 +50,6 @@ from __future__ import annotations
 import os
 
 import numpy as np
-from tqdm import tqdm
 import logging
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
@@ -275,7 +274,7 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
 
         D_full = np.hstack(D_list)
 
-        for it in tqdm(range(start_iter, self.n_iter), desc="FDDL iterations"):
+        for it in range(start_iter, self.n_iter):
             # ---- Step 2 (Eq. 7): update X class-by-class, D fixed ----
             tracker = GlobalMeanTracker(X_list, sizes)
             for i in range(n_classes):
@@ -300,23 +299,34 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
 
             # ---- Step 3 (Eq. 8): update D class-by-class, X fixed ----
             X_full_stacked = np.hstack(X_list)
+            def row_block(k: int) -> np.ndarray:
+                s, e = atom_boundaries[k]
+                return X_full_stacked[s:e, :]
+            
+            D_full_sum = sum(Dj @ row_block(j) for j, Dj in enumerate(D_list))
+
             for i in range(n_classes):
                 logger.info(f"Updating class {i} dictionary")
                 A_stat, B_stat = build_di_update_system(
-                    i, D_list, X_list, A_list, atom_boundaries,
-                    X_full_stacked=X_full_stacked, A_full=A_full, sample_boundaries=sample_boundaries
+                    i, D_list[i], D_full_sum, A_list, atom_boundaries,
+                    X_full_stacked=X_full_stacked, A_full=A_full, sample_boundaries=sample_boundaries,
                 )
                 Di_updated = bcd_dictionary_update(
                     D_list[i], A_stat, B_stat, 0, self.dict_max_iter, self.dict_tol
                 )
-                # bcd_dictionary_update enforces ||d_j|| <= 1 (Mairal's
-                # ball constraint); the paper requires exact unit norm.
-                D_list[i] = normalize_columns(Di_updated)
+                Di_new = normalize_columns(Di_updated)
+
+                # Patch the running sum in place of a full O(n_classes) rebuild.
+                D_full_sum += Di_new @ row_block(i) - D_list[i] @ row_block(i)
+                D_list[i] = Di_new
+
             D_full = np.hstack(D_list)
 
             # ---- Objective (Eq. 6) for convergence tracking ----
+            logger.info("Computing global fischer value")
             obj = self.lambda2 * global_fisher_value(X_list, self.eta)
             for i in range(n_classes):
+                logger.info(f"Computing fidelity value for class {i}")
                 obj += fidelity_value(X_list[i], i, D_list, D_full, A_list[i], atom_boundaries)
                 obj += self.lambda1 * float(np.sum(np.abs(X_list[i])))
             self.objective_history_.append(obj)

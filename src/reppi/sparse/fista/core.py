@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 import numpy as np
+from tqdm import tqdm
 
 ArrayFunc = Callable[[np.ndarray], np.ndarray]
 ScalarFunc = Callable[[np.ndarray], float]
@@ -152,9 +153,11 @@ def fista(
     n_iter = 0
     x_k = x_prev
 
-    for k in range(1, max_iter + 1):
+    for k in tqdm(range(1, max_iter + 1), desc="FISTA"):
         n_iter = k
         grad_y = grad_f(y)
+        f_xk: Optional[float] = None
+        g_xk: Optional[float] = None
 
         if mode == "constant":
             x_k = _p_L(y, grad_y, Lk, prox_g)
@@ -164,7 +167,8 @@ def fista(
             for _ in range(max_backtrack_iter):
                 x_k = _p_L(y, grad_y, L_bar, prox_g)
                 g_xk = g(x_k)
-                if f(x_k) <= _q(x_k, y, f_y, grad_y, L_bar, g_xk):
+                f_xk = f(x_k)
+                if f_xk <= _q(x_k, y, f_y, grad_y, L_bar, g_xk):
                     break
                 L_bar *= eta
             else:
@@ -179,7 +183,10 @@ def fista(
         y = x_k + ((t - 1.0) / t_next) * (x_k - x_prev)
 
         if f is not None and g is not None:
-            obj_history.append(f(x_k) + g(x_k))
+            if f_xk is None or g_xk is None:  # mode == "constant"
+                f_xk = f(x_k)
+                g_xk = g(x_k)
+            obj_history.append(f_xk + g_xk)
 
         if tol is not None:
             denom = max(1.0, float(np.linalg.norm(x_prev)))

@@ -9,7 +9,7 @@ Implements Algorithm 2 of:
 from __future__ import annotations
 
 import numpy as np
-
+from tqdm import tqdm
 
 def bcd_dictionary_update(
     D: np.ndarray,
@@ -48,9 +48,10 @@ def bcd_dictionary_update(
         Updated dictionary (same array, returned for convenience).
     """
     n_total = D.shape[1]
-    for _ in range(max_iter):
+    R = B - D @ A
+    
+    for _ in tqdm(range(max_iter), desc="BCD iterations"):
         max_change = 0.0
-        R = B - D @ A  # O(n_features * n_total^2), once per sweep
         for j in range(n_frozen, n_total):
             ajj = A[j, j]
             if ajj <= 1e-12:
