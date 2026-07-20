@@ -144,6 +144,7 @@ def initialization4lcksvd(
                 f"Class {c}: initialised {n_atoms_c} atoms from "
                 f"{X_c.shape[1]} samples."
             )
+        del ksvd_c, X_c
 
     D_init = np.hstack(D_blocks)
 
@@ -163,6 +164,7 @@ def initialization4lcksvd(
     c_w = cho_factor(gram_w, lower=True)
     # W = H Gamma^T (gram_w)^-1  <=>  gram_w W^T = Gamma H^T
     W_init = cho_solve(c_w, Gamma @ H.T).T
+    del gram_w, c_w
 
     # Step 5: fit A^(0) via ridge regression, Eq. (16):
     gram_a = gram.copy()
@@ -170,6 +172,7 @@ def initialization4lcksvd(
     c_a = cho_factor(gram_a, lower=True)
     # A = Q Gamma^T (gram_a)^-1  <=>  gram_a A^T = Gamma Q^T
     A_init = cho_solve(c_a, Gamma @ Q.T).T
+    del gram_a, c_a
 
     return D_init, A_init, W_init, Q
 

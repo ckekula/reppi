@@ -112,6 +112,7 @@ import os
 import tempfile
 
 import numpy as np
+from tqdm import tqdm
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
@@ -343,6 +344,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             D = normalize_columns(D_init.copy())
             A = A_init.copy()
             W = W_init.copy()
+            del D_init, A_init, W_init
         else:
             Q = Q_loaded
 
@@ -372,16 +374,18 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         )
 
         Gamma = None
-        for it in range(start_iter, self.n_iter):
+        for it in tqdm(range(start_iter, self.n_iter), desc="LC-KSVD iterations"):
 
             # ---- Build augmented dictionary ----
             # D_aug = [D ; sqrt_alpha*A ; sqrt_beta*W]
             D_aug = self._build_aug_dict(D, A, W, sqrt_alpha, sqrt_beta, use_classifier_term)
             D_aug_norm = normalize_columns(D_aug)
+            del D_aug
 
             # ---- Sparse code + single atom-update pass on the augmented
             #      system, delegated to KSVD ----
             atom_updater.fit(X_aug, D_init=D_aug_norm, checkpoint_dir=None)
+            del D_aug_norm
             D_aug_updated = atom_updater.D_
             Gamma = atom_updater.Gamma_
 
@@ -389,6 +393,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             D, A, W = self._split_aug_dict(
                 D_aug_updated, n_features, n_classes, sqrt_alpha, sqrt_beta, use_classifier_term
             )
+            del D_aug_updated
             D = normalize_columns(D)
 
             # ---- Track RMSE on original X ----

@@ -339,6 +339,8 @@ def build_di_update_system(
     A_list: Sequence[np.ndarray],
     atom_boundaries: dict[int, tuple[int, int]],
     X_full_stacked: np.ndarray | None = None,
+    A_full: np.ndarray | None = None,
+    sample_boundaries: dict[int, tuple[int, int]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Build the sufficient statistics (A_stat, B_stat) whose solution
@@ -397,9 +399,11 @@ def build_di_update_system(
         Sufficient statistics for the dictionary update, shapes
         (p_i, p_i) and (n_features, p_i).
     """
-    A_full = np.hstack(A_list)
+    if A_full is None:
+        A_full = np.hstack(A_list)
     n_features, n_samples = A_full.shape
-    sample_boundaries = block_boundaries([Ak.shape[1] for Ak in A_list])
+    if sample_boundaries is None:
+        sample_boundaries = block_boundaries([Ak.shape[1] for Ak in A_list])
 
     if X_full_stacked is None:
         X_full_stacked = np.hstack(X_list)
@@ -416,10 +420,7 @@ def build_di_update_system(
     R = A_full - Dj_sum
 
     s, e = sample_boundaries[i]
-    R_plus_T = R.copy()
-    R_plus_T[:, s:e] += A_list[i]
-
     X_i_full = row_block(i)  # X^i, shape (p_i, n_samples)
     A_stat = 2.0 * (X_i_full @ X_i_full.T)
-    B_stat = R_plus_T @ X_i_full.T
+    B_stat = R @ X_i_full.T + A_list[i] @ X_i_full[:, s:e].T
     return A_stat, B_stat

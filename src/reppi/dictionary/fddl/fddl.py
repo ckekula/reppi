@@ -35,14 +35,6 @@ from the typeset Eq. 7/8/Appendix A; see the module docstring of
 ``reppi.dictionary.fddl.utils`` for the derivation and its
 finite-difference / direct-computation verification.
 
-Classification (Section 5)
------------------------------
-Two schemes are supported, chosen via ``classifier``:
-  * 'gc' (Global Classifier, Eq. 9-10) — for small per-class sample
-    counts, e.g. face recognition.
-  * 'lc' (Local Classifier, Eq. 11-12) — for larger per-class sample
-    counts, e.g. digit recognition.
-
 Usage
 -----
     model = FDDL(
@@ -51,7 +43,6 @@ Usage
         classifier="gc", gamma=0.001, w=0.05,
     )
     model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
 """
 
 from __future__ import annotations
@@ -67,7 +58,6 @@ from reppi.dictionary.bcd.utils import bcd_dictionary_update
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.utils import _check_dict_normalized, normalize_columns
 
-from reppi.dictionary.fddl.classify import fit_class_means, gc_classify, lc_classify
 from reppi.dictionary.fddl.coding import solve_class_codes
 from reppi.dictionary.fddl.utils import (
     GlobalMeanTracker,
@@ -112,13 +102,6 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
     coding_max_iter, coding_tol : controls for the Eq. (7) solve.
     dict_max_iter, dict_tol : controls for the Eq. (8) BCD atom update
         (passed through to ``bcd_dictionary_update``).
-    classifier : {'gc', 'lc'}
-        Default classification scheme for ``predict`` (Section 5).
-    gamma, w : float
-        GC hyperparameters (Eq. 9-10): L1 weight and mean-distance
-        weight.
-    gamma1, gamma2 : float
-        LC hyperparameters (Eq. 11-12): L1 weight and mean-pull weight.
     random_state : int or None
     verbose : bool
 
@@ -156,11 +139,6 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
         coding_tol: float | None = 1e-6,
         dict_max_iter: int = 1,
         dict_tol: float = 1e-6,
-        classifier: str = "gc",
-        gamma: float = 0.001,
-        w: float = 0.05,
-        gamma1: float = 0.005,
-        gamma2: float = 0.005,
         random_state: int | None = None,
         verbose: bool = False,
     ) -> None:
@@ -168,8 +146,6 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
             raise ValueError("lambda1 and lambda2 must be >= 0.")
         if eta <= 0:
             raise ValueError("eta must be > 0.")
-        if classifier not in ("gc", "lc"):
-            raise ValueError("classifier must be 'gc' or 'lc'.")
 
         self.n_components = n_components
         self.lambda1 = lambda1
@@ -181,11 +157,6 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
         self.coding_tol = coding_tol
         self.dict_max_iter = dict_max_iter
         self.dict_tol = dict_tol
-        self.classifier = classifier
-        self.gamma = gamma
-        self.w = w
-        self.gamma1 = gamma1
-        self.gamma2 = gamma2
         self.random_state = random_state
         self.verbose = verbose
 
@@ -195,8 +166,6 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
         self.classes_: np.ndarray | None = None
         self.sample_order_: np.ndarray | None = None
         self.objective_history_: list[float] = []
-        self._means_full_: dict[int, np.ndarray] | None = None
-        self._means_own_: dict[int, np.ndarray] | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -259,6 +228,8 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
         A_list = [
             X[:, sample_order[s:e]] for s, e in (sample_boundaries[i] for i in range(n_classes))
         ]
+        
+        A_full = np.hstack(A_list)
 
         atoms_per_class = resolve_atoms_per_class(self.n_components, n_classes)
         atom_boundaries = block_boundaries(atoms_per_class)
@@ -332,7 +303,8 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
             for i in range(n_classes):
                 logger.info(f"Updating class {i} dictionary")
                 A_stat, B_stat = build_di_update_system(
-                    i, D_list, X_list, A_list, atom_boundaries, X_full_stacked=X_full_stacked
+                    i, D_list, X_list, A_list, atom_boundaries,
+                    X_full_stacked=X_full_stacked, A_full=A_full, sample_boundaries=sample_boundaries
                 )
                 Di_updated = bcd_dictionary_update(
                     D_list[i], A_stat, B_stat, 0, self.dict_max_iter, self.dict_tol
@@ -369,7 +341,6 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
         self.atom_boundaries_ = atom_boundaries
         self.classes_ = classes
         self.sample_order_ = sample_order
-        self._means_full_, self._means_own_ = fit_class_means(X_list, atom_boundaries)
         return self
 
     @property
@@ -377,54 +348,6 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
         if self.D_list_ is None:
             raise DictionaryLearningError("Call fit() before accessing D_.")
         return np.hstack(self.D_list_)
-
-    def predict(
-        self, X: np.ndarray, scheme: str | None = None, return_scores: bool = False
-    ):
-        """
-        Classify query signals (Eq. 2, using Eq. 10 or Eq. 12's metric).
-
-        Parameters
-        ----------
-        X : np.ndarray, shape (n_features, n_samples)
-        scheme : {'gc', 'lc'} or None
-            Overrides ``self.classifier`` for this call.
-        return_scores : bool
-            If True, also return the (n_classes, n_samples) score
-            matrix (lower is better).
-
-        Returns
-        -------
-        y_pred : np.ndarray, shape (n_samples,)
-            Predicted labels, in the original label space of ``fit``.
-        scores : np.ndarray, optional
-        """
-        if self.D_list_ is None:
-            raise DictionaryLearningError("Call fit() before predict().")
-        X = np.asarray(X, dtype=float)
-        if X.ndim == 1:
-            X = X[:, np.newaxis]
-
-        scheme = scheme if scheme is not None else self.classifier
-        if scheme == "gc":
-            labels_idx, scores = gc_classify(
-                X,
-                self.D_,
-                self.D_list_,
-                self.atom_boundaries_,
-                self._means_full_,
-                self.gamma,
-                self.w,
-            )
-        elif scheme == "lc":
-            labels_idx, scores = lc_classify(
-                X, self.D_list_, self._means_own_, self.gamma1, self.gamma2
-            )
-        else:
-            raise ValueError("scheme must be 'gc' or 'lc'.")
-
-        y_pred = self.classes_[labels_idx]
-        return (y_pred, scores) if return_scores else y_pred
 
     # ------------------------------------------------------------------
     # Checkpointing
