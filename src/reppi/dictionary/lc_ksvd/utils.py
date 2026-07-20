@@ -4,6 +4,7 @@ Utility functions for LC-KSVD.
 """
 
 import numpy as np
+from scipy.linalg import cho_factor, cho_solve
 
 from reppi.sparse.omp.omp import OMP
 from reppi.dictionary.ksvd.ksvd import KSVD
@@ -47,10 +48,9 @@ def _build_label_consistent_target(
         end = start + atoms_per_class if c < n_classes - 1 else n_components
         atom_class[start:end] = c
 
-    Q = np.zeros((n_components, n_samples))
-    for i in range(n_samples):
-        cls = int(np.argmax(H[:, i]))
-        Q[atom_class == cls, i] = 1.0
+    # Vectorised: Q[a, i] = 1 iff atom a's class == sample i's class.
+    sample_class = np.argmax(H, axis=0)  # (n_samples,)
+    Q = (atom_class[:, None] == sample_class[None, :]).astype(H.dtype)
 
     return Q
 
@@ -156,13 +156,20 @@ def initialization4lcksvd(
 
     # Step 4: fit W^(0) via ridge regression, Eq. (17):
     #   W = H X^T (X X^T + lambda1 * I)^-1
-    gram_w = Gamma @ Gamma.T + lambda1 * np.eye(n_components)
-    W_init = H @ Gamma.T @ np.linalg.inv(gram_w)
+    gram = Gamma @ Gamma.T
+    diag_idx = np.diag_indices_from(gram)
+    gram_w = gram.copy()
+    gram_w[diag_idx] += lambda1
+    c_w = cho_factor(gram_w, lower=True)
+    # W = H Gamma^T (gram_w)^-1  <=>  gram_w W^T = Gamma H^T
+    W_init = cho_solve(c_w, Gamma @ H.T).T
 
     # Step 5: fit A^(0) via ridge regression, Eq. (16):
-    #   A = Q X^T (X X^T + lambda2 * I)^-1
-    gram_a = Gamma @ Gamma.T + lambda2 * np.eye(n_components)
-    A_init = Q @ Gamma.T @ np.linalg.inv(gram_a)
+    gram_a = gram.copy()
+    gram_a[diag_idx] += lambda2
+    c_a = cho_factor(gram_a, lower=True)
+    # A = Q Gamma^T (gram_a)^-1  <=>  gram_a A^T = Gamma Q^T
+    A_init = cho_solve(c_a, Gamma @ Q.T).T
 
     return D_init, A_init, W_init, Q
 
