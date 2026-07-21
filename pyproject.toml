@@ -1,6 +1,6 @@
 [project]
 name = "reppi"
-version = "0.1.43"
+version = "0.1.44"
 readme = "README.md"
 description = "A modular Python toolkit for sparse representation-based learning/classification algorithms"
 requires-python = ">=3.12"
