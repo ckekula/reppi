@@ -20,46 +20,90 @@ one prox evaluation).
 Notation mirrors the paper directly: p_L(y) is the prox-gradient step
 (eq. 2.6), Q_L(x, y) is the quadratic model (eq. 2.5), t_k / y_k are the
 momentum sequence and extrapolation point (eqs. 4.2-4.3).
+
+Backend
+-------
+The paper's analysis holds verbatim in any Hilbert space (Remark 2.1) —
+all that's needed is an inner product and its induced norm. `x0` may
+therefore be a numpy.ndarray *or* a torch.Tensor (CPU or GPU). If `x0` is
+a GPU tensor and the supplied `grad_f`/`prox_g`/`f`/`g` operate on tensors
+on that same device, the entire iterative loop runs on GPU with no
+device transfers other than the (unavoidable) scalar convergence check.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 
 import numpy as np
-from tqdm import tqdm
+import logging
 
-ArrayFunc = Callable[[np.ndarray], np.ndarray]
-ScalarFunc = Callable[[np.ndarray], float]
-ProxFunc = Callable[[np.ndarray, float], np.ndarray]
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:  # torch is optional; numpy-only usage still works
+    torch = None  # type: ignore[assignment]
+    _TORCH_AVAILABLE = False
+
+Array = Union[np.ndarray, "torch.Tensor"]
+ArrayFunc = Callable[[Array], Array]
+ScalarFunc = Callable[[Array], float]
+ProxFunc = Callable[[Array, float], Array]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class FISTAResult:
     """Result of a FISTA run."""
 
-    x: np.ndarray
+    x: Array
     n_iter: int
     converged: bool
     L: float
     objective_history: List[float] = field(default_factory=list)
 
 
-def _inner(a: np.ndarray, b: np.ndarray) -> float:
-    """Real inner product; valid for vectors or matrices (Frobenius)."""
-    return np.float32(np.vdot(a, b))
+def _is_torch_tensor(a: Array) -> bool:
+    return _TORCH_AVAILABLE and isinstance(a, torch.Tensor)
 
 
-def _norm_sq(a: np.ndarray) -> float:
+def _inner(a: Array, b: Array) -> float:
+    """Real inner product; valid for vectors or matrices (Frobenius),
+    for both numpy arrays and torch tensors (CPU or GPU)."""
+    if _is_torch_tensor(a):
+        return float(torch.sum(a * b))
+    return float(np.vdot(a, b))
+
+
+def _norm_sq(a: Array) -> float:
     return _inner(a, a)
 
 
+def _norm(a: Array) -> float:
+    if _is_torch_tensor(a):
+        return float(torch.linalg.norm(a))
+    return float(np.linalg.norm(a))
+
+
+def _prepare_x0(x0: Array) -> Array:
+    """Cast to float32, preserving backend (numpy/torch) and, for torch,
+    device (so a caller passing a CUDA tensor keeps the whole solve on GPU)."""
+    if _is_torch_tensor(x0):
+        return x0.detach().clone().to(dtype=torch.float32)
+    return np.asarray(x0, dtype=np.float32).copy()
+
+
+def _copy(a: Array) -> Array:
+    return a.clone() if _is_torch_tensor(a) else a.copy()
+
+
 def _q(
-    x: np.ndarray,
-    y: np.ndarray,
+    x: Array,
+    y: Array,
     f_y: float,
-    grad_f_y: np.ndarray,
+    grad_f_y: Array,
     L: float,
     g_x: float,
 ) -> float:
@@ -68,7 +112,7 @@ def _q(
     return f_y + _inner(diff, grad_f_y) + 0.5 * L * _norm_sq(diff) + g_x
 
 
-def _p_L(y: np.ndarray, grad_f_y: np.ndarray, L: float, prox_g: ProxFunc) -> np.ndarray:
+def _p_L(y: Array, grad_f_y: Array, L: float, prox_g: ProxFunc) -> Array:
     """p_L(y), eq. (2.6): prox-gradient step."""
     return prox_g(y - grad_f_y / L, 1.0 / L)
 
@@ -76,7 +120,7 @@ def _p_L(y: np.ndarray, grad_f_y: np.ndarray, L: float, prox_g: ProxFunc) -> np.
 def fista(
     grad_f: ArrayFunc,
     prox_g: ProxFunc,
-    x0: np.ndarray,
+    x0: Array,
     f: Optional[ScalarFunc] = None,
     g: Optional[ScalarFunc] = None,
     L: Optional[float] = None,
@@ -93,13 +137,15 @@ def fista(
     Parameters
     ----------
     grad_f : callable
-        Gradient of the smooth part, grad_f(x) -> array (same shape as x).
+        Gradient of the smooth part, grad_f(x) -> array (same shape/type as x).
     prox_g : callable
         Proximal operator of g: prox_g(v, t) -> argmin_x g(x) + ||x-v||^2/(2t).
-    x0 : np.ndarray
+    x0 : np.ndarray or torch.Tensor
         Initial point. Any shape is supported (vector, matrix, ...); the
         Frobenius inner product is used internally, so the analysis holds
         verbatim in this more general Hilbert-space setting (Remark 2.1).
+        Pass a torch.Tensor already on a GPU device to run the whole solve
+        on GPU (grad_f/prox_g/f/g must then also operate on that device).
     f, g : callable, optional
         Value of the smooth / nonsmooth parts. Required when
         mode='backtracking' (needed to check the descent condition
@@ -143,17 +189,17 @@ def fista(
     if max_iter < 1:
         raise ValueError("max_iter must be >= 1.")
 
-    x_prev = np.asarray(x0, dtype=np.float32).copy()  # x_0
-    y = x_prev.copy()  # y_1 = x_0
+    x_prev = _prepare_x0(x0)  # x_0
+    y = _copy(x_prev)  # y_1 = x_0
     t = 1.0  # t_1 = 1
-    Lk = np.float32(L) if mode == "constant" else np.float32(L0)
+    Lk = float(L) if mode == "constant" else float(L0)
 
     obj_history: List[float] = []
     converged = False
     n_iter = 0
     x_k = x_prev
 
-    for k in tqdm(range(1, max_iter + 1), desc="FISTA"):
+    for k in range(1, max_iter + 1):
         n_iter = k
         grad_y = grad_f(y)
         f_xk: Optional[float] = None
@@ -181,7 +227,7 @@ def fista(
         # eqs. (4.2)-(4.3): momentum update and extrapolation point.
         t_next = (1.0 + np.sqrt(1.0 + 4.0 * t * t)) / 2.0
         x_diff = x_k - x_prev
-        y = x_k + ((t - 1.0) / t_next) * (x_diff)
+        y = x_k + ((t - 1.0) / t_next) * x_diff
 
         if f is not None and g is not None:
             if f_xk is None or g_xk is None:  # mode == "constant"
@@ -190,14 +236,17 @@ def fista(
             obj_history.append(f_xk + g_xk)
 
         if tol is not None:
-            denom = max(1.0, np.float32(np.linalg.norm(x_prev)))
-            if np.float32(np.linalg.norm(x_diff)) / denom < tol:
+            denom = max(1.0, _norm(x_prev))
+            if _norm(x_diff) / denom < tol:
                 x_prev = x_k
                 converged = True
                 break
 
         x_prev = x_k
         t = t_next
+
+        if k % 50 == 0 or k == max_iter:
+            logger.info("FISTA iteration %d/%d (L=%.4g)", k, max_iter, Lk)
 
     return FISTAResult(
         x=x_prev,

@@ -47,7 +47,7 @@ def _optimize_atom(
 
     # --- Dead atom: replace with the worst-reconstructed unused signal ---
     if len(data_indices) == 0:
-        logger.info(f"Replacing dead atom {j} with a high-error signal")
+        logger.info("Atom %d is dead; replacing with worst unused signal.", j)
         max_signals = 5000
         
         perm = np.random.permutation(len(unused_sigs))[:min(max_signals, len(unused_sigs))]

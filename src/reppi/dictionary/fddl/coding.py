@@ -89,7 +89,7 @@ def solve_class_codes(
         )
 
     def f(Xi: np.ndarray) -> float:
-        return fidelity_value(Xi, i, D_list, D_full, Ai, atom_boundaries) + lambda2 * coef_value(
+        return fidelity_value(Xi, i, D_list, Ai, atom_boundaries) + lambda2 * coef_value(
             Xi, i, other_stats, eta
         )
 

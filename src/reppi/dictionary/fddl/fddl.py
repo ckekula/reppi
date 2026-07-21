@@ -267,7 +267,7 @@ class FDDL():
             else:
                 # Table 1, step 1: random unit-norm atoms.
                 D_list = [
-                    normalize_columns(rng.randn(n_features, p), dtype=np.float32) for p in atoms_per_class
+                    normalize_columns(rng.randn(n_features, p)) for p in atoms_per_class
                 ]
             X_list = [np.zeros((n_atoms, sizes[i]), dtype=np.float32) for i in range(n_classes)]
 
