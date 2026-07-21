@@ -119,8 +119,8 @@ class FISTA(BaseSparseCoder):
         -------
         Gamma : np.ndarray, shape (n_atoms, n_samples)
         """
-        X = np.asarray(X, dtype=float)
-        D = np.asarray(D, dtype=float)
+        X = np.asarray(X, dtype=np.float32)
+        D = np.asarray(D, dtype=np.float32)
 
         if X.ndim == 1:
             X = X[:, np.newaxis]
@@ -132,24 +132,24 @@ class FISTA(BaseSparseCoder):
         n_samples = X.shape[1]
 
         if self.mode == "constant":
-            L_est = lipschitz_constant_lsq(D) if L is None else float(L)
+            L_est = lipschitz_constant_lsq(D) if L is None else np.float32(L)
             L0_init = L_est
         else:  # backtracking
-            L_est = None if L is None else float(L)
+            L_est = None if L is None else np.float32(L)
             L0_init = L_est if L_est is not None else self.L0
 
         def grad_f(Z: np.ndarray) -> np.ndarray:
             return 2.0 * (D.T @ (D @ Z - X))
 
         need_fg = self.mode == "backtracking" or self.track_objective
-        f = (lambda Z: float(np.sum((D @ Z - X) ** 2))) if need_fg else None
-        g = (lambda Z: float(self.alpha * np.sum(np.abs(Z)))) if need_fg else None
+        f = (lambda Z: np.float32(np.sum((D @ Z - X) ** 2))) if need_fg else None
+        g = (lambda Z: np.float32(self.alpha * np.sum(np.abs(Z)))) if need_fg else None
 
         def prox_g(V: np.ndarray, t: float) -> np.ndarray:
             return soft_threshold(V, self.alpha * t)
 
         gamma0 = (
-            np.zeros((n_atoms, n_samples)) if x0 is None else np.asarray(x0, dtype=float)
+            np.zeros((n_atoms, n_samples), dtype=np.float32) if x0 is None else np.asarray(x0, dtype=np.float32)
         )
 
         result = fista(

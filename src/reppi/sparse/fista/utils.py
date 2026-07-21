@@ -30,4 +30,4 @@ def lipschitz_constant_lsq(D: np.ndarray) -> float:
     where ||D||_2 is the spectral (largest singular value) norm.
     """
     sigma_max = np.linalg.svd(D, compute_uv=False)[0]
-    return 2.0 * float(sigma_max) ** 2
+    return 2.0 * np.float32(sigma_max) ** 2

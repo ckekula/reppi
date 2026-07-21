@@ -29,7 +29,7 @@ from tqdm import tqdm
 
 from reppi.base import BaseDictionaryLearner
 from reppi.exceptions import DictionaryLearningError
-from reppi.sparse.omp.omp import OMP, batch_omp
+from reppi.sparse.omp.omp import OMP
 from reppi.sparse.utils import _check_dict_normalized
 from reppi.sparse.utils import col_norms_squared, normalize_columns
 
@@ -163,11 +163,11 @@ class KSVD(BaseDictionaryLearner):
         -------
         self
         """
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float32)
         rng = np.random.RandomState(self.random_state)
 
         if D_frozen is not None:
-            D_frozen = np.asarray(D_frozen, dtype=float)
+            D_frozen = np.asarray(D_frozen, dtype=np.float32)
             if D_frozen.shape[0] != X.shape[0]:
                 raise DictionaryLearningError(
                     f"D_frozen has {D_frozen.shape[0]} features, but X has "
@@ -228,8 +228,8 @@ class KSVD(BaseDictionaryLearner):
                 DtX_active = D_active.T @ X
                 G_aa = D_active.T @ D_active
 
-                G = np.empty((n_total, n_total))
-                DtX = np.empty((n_total, X.shape[1]))
+                G = np.empty((n_total, n_total), dtype=np.float32)
+                DtX = np.empty((n_total, X.shape[1]), dtype=np.float32)
                 if n_frozen > 0:
                     G_fa = D_frozen_cols.T @ D_active
                     G[:n_frozen, :n_frozen] = G_ff
@@ -254,7 +254,7 @@ class KSVD(BaseDictionaryLearner):
                 )
                 Gamma[j, idx] = gamma_j
 
-            err = float(np.sqrt((R ** 2).sum() / X.size))
+            err = np.float32(np.sqrt((R ** 2).sum() / X.size))
             self.errors_.append(err)
             logger.info(f"Iter {it + 1}/{self.n_iter}  RMSE={err:.6f}")
 
@@ -301,7 +301,7 @@ class KSVD(BaseDictionaryLearner):
         k = self.n_components
 
         if D_init is not None:
-            D = np.asarray(D_init, dtype=float)
+            D = np.asarray(D_init, dtype=np.float32)
             if D.shape != (n_features, k):
                 raise DictionaryLearningError(
                     f"D_init shape {D.shape} does not match "
@@ -325,10 +325,6 @@ class KSVD(BaseDictionaryLearner):
         G: np.ndarray | None,
         DtX: np.ndarray | None = None,
     ) -> np.ndarray:
-        if self.mem_usage == "high" and G is not None:
-            if DtX is None:
-                DtX = D.T @ X
-            return batch_omp(DtX, G, self.n_nonzero_coefs)
         logger.info("Sparse coding %d signals with dictionary of shape %s", X.shape[1], D.shape)
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, D, G=G, DtX=DtX)
@@ -375,7 +371,7 @@ class KSVD(BaseDictionaryLearner):
                     Gamma=Gamma,
                     unused=unused,
                     replaced=replaced,
-                    errors_=np.asarray(self.errors_, dtype=float),
+                    errors_=np.asarray(self.errors_, dtype=np.float32),
                     completed_iter=completed_iter,
                     n_iter=self.n_iter,
                     n_components=self.n_components,

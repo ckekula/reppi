@@ -74,7 +74,7 @@ wheels = [
 
 [[package]]
 name = "reppi"
-version = "0.1.35"
+version = "0.1.42"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },

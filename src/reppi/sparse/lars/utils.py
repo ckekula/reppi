@@ -27,7 +27,7 @@ def _cholesky_active(G: np.ndarray, active: list[int], signs: list[int]) -> np.n
     Used after a drop step, where a rank-1 downdate is not worth the added
     complexity given that active-set sizes are bounded by n_nonzero_coefs.
     """
-    s = np.asarray(signs, dtype=float)
+    s = np.asarray(signs, dtype=np.float32)
     Gs = G[np.ix_(active, active)] * np.outer(s, s)
     try:
         L = linalg.cholesky(Gs, lower=True)
@@ -52,13 +52,13 @@ def _cholesky_add(
     if k == 0:
         return np.array([[1.0]])
 
-    s = np.asarray(signs, dtype=float)
+    s = np.asarray(signs, dtype=np.float32)
     w = sign_j * s * G[active, j]  # (k,)
     v = linalg.solve_triangular(L, w, lower=True)
-    diag_sq = 1.0 - float(v @ v)
+    diag_sq = 1.0 - np.float32(v @ v)
     if diag_sq <= _EPS:
         raise linalg.LinAlgError("Active set is (numerically) rank deficient.")
-    L_new = np.zeros((k + 1, k + 1))
+    L_new = np.zeros((k + 1, k + 1), dtype=np.float32)
     L_new[:k, :k] = L
     L_new[k, :k] = v
     L_new[k, k] = np.sqrt(diag_sq)
@@ -110,10 +110,10 @@ def lars_lasso_cholesky(
         max_iter = 8 * n_atoms
 
     correlation = D.T @ x
-    coef = np.zeros(n_atoms)
+    coef = np.zeros(n_atoms, dtype=np.float32)
     active: list[int] = []
     signs: list[int] = []
-    L = np.zeros((0, 0))
+    L = np.zeros((0, 0), dtype=np.float32)
 
     for _ in range(max_iter):
         C = np.max(np.abs(correlation)) if n_atoms > 0 else 0.0
@@ -150,7 +150,7 @@ def lars_lasso_cholesky(
         Ginv1 = linalg.cho_solve((L, True), ones_vec)
         A_A = 1.0 / np.sqrt(np.sum(ones_vec * Ginv1))
         w_A = A_A * Ginv1
-        v = w_A * np.asarray(signs, dtype=float)  # direction of coef[active]
+        v = w_A * np.asarray(signs, dtype=np.float32)  # direction of coef[active]
 
         a = G[:, active] @ v  # D.T @ u_A, for every atom
 
@@ -169,7 +169,7 @@ def lars_lasso_cholesky(
             cand = np.concatenate([cand_minus, cand_plus])
             cand = cand[cand > eps]
             if cand.size:
-                gamma_hat = float(cand.min())
+                gamma_hat = np.float32(cand.min())
         else:
             gamma_hat = C / A_A
 
@@ -178,7 +178,7 @@ def lars_lasso_cholesky(
         with np.errstate(divide="ignore", invalid="ignore"):
             drop_cand = -coef_active / v
         drop_cand = np.where(drop_cand > eps, drop_cand, np.inf)
-        gamma_tilde = float(np.min(drop_cand)) if drop_cand.size else np.inf
+        gamma_tilde = np.float32(np.min(drop_cand)) if drop_cand.size else np.inf
 
         gamma_step = min(gamma_hat, gamma_tilde)
         if not np.isfinite(gamma_step):
@@ -194,7 +194,7 @@ def lars_lasso_cholesky(
             coef[drop_atom] = 0.0
             del active[k_drop]
             del signs[k_drop]
-            L = _cholesky_active(G, active, signs) if active else np.zeros((0, 0))
+            L = _cholesky_active(G, active, signs) if active else np.zeros((0, 0), dtype=np.float32)
             continue
 
         if n_nonzero_coefs is not None and len(active) >= n_nonzero_coefs:

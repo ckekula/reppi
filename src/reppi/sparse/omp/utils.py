@@ -30,10 +30,10 @@ def omp_cholesky(
     n_atoms = D.shape[1]
     residual = x.copy().astype(float)
     support: list[int] = []
-    gamma = np.zeros(n_atoms)
+    gamma = np.zeros(n_atoms, dtype=np.float32)
 
     # Cholesky factor of D[:,support].T @ D[:,support]
-    L = np.zeros((n_nonzero, n_nonzero))
+    L = np.zeros((n_nonzero, n_nonzero), dtype=np.float32)
 
     for k in range(n_nonzero):
         correlations = D.T @ residual
@@ -48,7 +48,7 @@ def omp_cholesky(
             w = Ds[:, :-1].T @ D[:, j]  # (k,)
             # Solve L[:k,:k] * v = w
             v = linalg.solve_triangular(L[:k, :k], w, lower=True)
-            l_new = np.sqrt(max(1.0 - float(v @ v), 1e-14))
+            l_new = np.sqrt(max(1.0 - np.float32(v @ v), 1e-14))
             L[k, :k] = v
             L[k, k] = l_new
 
@@ -87,13 +87,13 @@ def batch_omp(
         Sparse representations (dense).
     """
     n_atoms, n_samples = DtX.shape
-    Gamma = np.zeros((n_atoms, n_samples))
+    Gamma = np.zeros((n_atoms, n_samples), dtype=np.float32)
 
     for i in tqdm(range(n_samples), desc="Processing samples with Batch-OMP"):
         dtx = DtX[:, i]
         residual_proj = dtx.copy()
         support: list[int] = []
-        L = np.zeros((n_nonzero, n_nonzero))
+        L = np.zeros((n_nonzero, n_nonzero), dtype=np.float32)
 
         for k in range(n_nonzero):
             j = int(np.argmax(np.abs(residual_proj)))
@@ -105,7 +105,7 @@ def batch_omp(
             else:
                 w = G[support[:-1], j]  # (k,)
                 v = linalg.solve_triangular(L[:k, :k], w, lower=True)
-                l_new = np.sqrt(max(1.0 - float(v @ v), 1e-14))
+                l_new = np.sqrt(max(1.0 - np.float32(v @ v), 1e-14))
                 L[k, :k] = v
                 L[k, k] = l_new
 

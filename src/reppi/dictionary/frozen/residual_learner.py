@@ -61,7 +61,7 @@ class FrozenDictionaryLearner:
         learner_kwargs: dict,
         n_nonzero_coefs: int,
     ) -> None:
-        self.D_frozen = np.asarray(D_frozen, dtype=float)
+        self.D_frozen = np.asarray(D_frozen, dtype=np.float32)
         self.learner_class = learner_class
         self.learner_kwargs = learner_kwargs
         self.n_nonzero_coefs = n_nonzero_coefs
@@ -109,7 +109,7 @@ class FrozenDictionaryLearner:
         -------
         self
         """
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float32)
 
         learner = self.learner_class(**self.learner_kwargs)
 

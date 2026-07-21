@@ -33,7 +33,7 @@ def col_norms_squared(X: np.ndarray, block_size: int = 2000) -> np.ndarray:
     norms2 : np.ndarray, shape (n_samples,)
     """
     n_samples = X.shape[1]
-    norms2 = np.zeros(n_samples)
+    norms2 = np.zeros(n_samples, dtype=np.float32)
     for start in range(0, n_samples, block_size):
         end = min(start + block_size, n_samples)
         norms2[start:end] = (X[:, start:end] ** 2).sum(axis=0)
@@ -60,7 +60,7 @@ def rep_error_squared(
     err2 : np.ndarray, shape (n_samples,)
     """
     n_samples = X.shape[1]
-    err2 = np.zeros(n_samples)
+    err2 = np.zeros(n_samples, dtype=np.float32)
     for start in range(0, n_samples, block_size):
         end = min(start + block_size, n_samples)
         diff = X[:, start:end] - D @ Gamma[:, start:end]

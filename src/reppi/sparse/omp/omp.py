@@ -70,8 +70,8 @@ class OMP(BaseSparseCoder):
         -------
         Gamma : np.ndarray, shape (n_atoms, n_samples)
         """
-        X = np.asarray(X, dtype=float)
-        D = np.asarray(D, dtype=float)
+        X = np.asarray(X, dtype=np.float32)
+        D = np.asarray(D, dtype=np.float32)
 
         if X.ndim == 1:
             X = X[:, np.newaxis]
@@ -92,7 +92,7 @@ class OMP(BaseSparseCoder):
         # cholesky mode — signal by signal
         n_atoms = D.shape[1]
         n_samples = X.shape[1]
-        Gamma = np.zeros((n_atoms, n_samples))
+        Gamma = np.zeros((n_atoms, n_samples), dtype=np.float32)
         for i in range(n_samples):
             logger.info("Encoding signal %d/%d with dictionary of shape %s using OMP-Cholesky", i + 1, n_samples, D.shape)
             Gamma[:, i] = omp_cholesky(D, X[:, i], T)    

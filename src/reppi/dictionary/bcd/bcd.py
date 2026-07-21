@@ -170,7 +170,7 @@ class BCD(BaseDictionaryLearner):
         -------
         self
         """
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float32)
         n_features, n_samples = X.shape
         rng = np.random.RandomState(self.random_state)
 
@@ -180,7 +180,7 @@ class BCD(BaseDictionaryLearner):
         self.lambda_used_ = lambda_used
 
         if D_frozen is not None:
-            D_frozen = np.asarray(D_frozen, dtype=float)
+            D_frozen = np.asarray(D_frozen, dtype=np.float32)
             if D_frozen.shape[0] != n_features:
                 raise DictionaryLearningError(
                     f"D_frozen has {D_frozen.shape[0]} features, but X has "
@@ -217,8 +217,8 @@ class BCD(BaseDictionaryLearner):
 
         n_total = D.shape[1]
         if A is None:
-            A = np.zeros((n_total, n_total))
-            B = np.zeros((n_features, n_total))
+            A = np.zeros((n_total, n_total), dtype=np.float32)
+            B = np.zeros((n_features, n_total), dtype=np.float32)
 
         coder = LARSLasso(alpha=lambda_used, check_dict=False)
         Gamma = None
@@ -245,7 +245,7 @@ class BCD(BaseDictionaryLearner):
             # --- epoch-end bookkeeping: error, purging ---
             G = D.T @ D
             Gamma = coder.encode(X, D, G=G)
-            err = float(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
+            err = np.float32(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
             self.errors_.append(err)
 
             sample_usage = np.count_nonzero(Gamma, axis=0)
@@ -297,7 +297,7 @@ class BCD(BaseDictionaryLearner):
         k = self.n_components
 
         if D_init is not None:
-            D = np.asarray(D_init, dtype=float)
+            D = np.asarray(D_init, dtype=np.float32)
             if D.shape != (n_features, k):
                 raise DictionaryLearningError(
                     f"D_init shape {D.shape} does not match "
@@ -346,7 +346,7 @@ class BCD(BaseDictionaryLearner):
                         A=A,
                         B=B,
                         theta=theta,
-                        errors_=np.asarray(self.errors_, dtype=float),
+                        errors_=np.asarray(self.errors_, dtype=np.float32),
                         completed_epoch=completed_epoch,
                         n_iter=self.n_iter,
                         n_components=self.n_components,
@@ -380,7 +380,7 @@ class BCD(BaseDictionaryLearner):
             n_components = int(data["n_components"])
             n_iter = int(data["n_iter"])
             batch_size = int(data["batch_size"])
-            lambda_ckpt = float(data["lambda_used"])
+            lambda_ckpt = np.float32(data["lambda_used"])
             completed_epoch = int(data["completed_epoch"])
             n_frozen_ckpt = int(data["n_frozen"]) if "n_frozen" in data else 0
 
@@ -423,7 +423,7 @@ class BCD(BaseDictionaryLearner):
             D = data["D"].copy()
             A = data["A"].copy()
             B = data["B"].copy()
-            theta = float(data["theta"])
+            theta = np.float32(data["theta"])
             errors_ = list(data["errors_"])
 
         if n_frozen > 0:

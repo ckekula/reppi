@@ -296,8 +296,8 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         -------
         self
         """
-        X = np.asarray(X, dtype=float)
-        H = np.asarray(H, dtype=float)
+        X = np.asarray(X, dtype=np.float32)
+        H = np.asarray(H, dtype=np.float32)
         n_features, n_samples = X.shape
         n_classes = H.shape[0]
 
@@ -342,9 +342,11 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
                 )
 
             D = normalize_columns(D_init.copy())
+            del D_init
             A = A_init.copy()
+            del A_init
             W = W_init.copy()
-            del D_init, A_init, W_init
+            del W_init
         else:
             Q = Q_loaded
 
@@ -399,7 +401,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             D = normalize_columns(D)
 
             # ---- Track RMSE on original X ----
-            err = float(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
+            err = np.float32(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
             self.errors_.append(err)
 
             if self.verbose:
@@ -483,7 +485,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
                     A=A,
                     W=W,
                     Q=Q,
-                    errors_=np.asarray(self.errors_, dtype=float),
+                    errors_=np.asarray(self.errors_, dtype=np.float32),
                     completed_iter=completed_iter,
                     n_iter=self.n_iter,
                     n_components=self.n_components,
@@ -514,8 +516,8 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             n_components = int(data["n_components"])
             n_nonzero_coefs = int(data["n_nonzero_coefs"])
             n_iter = int(data["n_iter"])
-            alpha = float(data["alpha"])
-            beta = float(data["beta"])
+            alpha = np.float32(data["alpha"])
+            beta = np.float32(data["beta"])
             variant = str(data["variant"])
             completed_iter = int(data["completed_iter"])
 
@@ -635,7 +637,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         """
         true_labels = np.argmax(H, axis=0)
         pred_labels = self.predict(X)
-        return float(np.mean(pred_labels == true_labels))
+        return np.float32(np.mean(pred_labels == true_labels), dtype=np.float32)
 
     @staticmethod
     def _build_aug_dict(
@@ -680,7 +682,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         if use_classifier:
             W = D_aug[n_features + A_rows:, :]
         else:
-            W = np.zeros((n_classes, n_components))
+            W = np.zeros((n_classes, n_components), dtype=np.float32)
 
         l2norms = np.linalg.norm(D, axis=0)
         l2norms = np.where(l2norms > 1e-14, l2norms, 1e-14)

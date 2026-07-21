@@ -60,7 +60,7 @@ def bcd_dictionary_update(
             norm_u = np.linalg.norm(u_j)
             d_j_new = u_j / max(norm_u, 1.0)
             delta = d_j_new - D[:, j]
-            change = float(np.linalg.norm(delta))
+            change = np.float32(np.linalg.norm(delta))
             max_change = max(max_change, change)
             R -= np.outer(delta, A[j, :])  # keep R consistent with new D[:, j]
             D[:, j] = d_j_new

@@ -94,7 +94,7 @@ def solve_class_codes(
         )
 
     def g(Xi: np.ndarray) -> float:
-        return float(lambda1 * np.sum(np.abs(Xi)))
+        return np.float32(lambda1 * np.sum(np.abs(Xi)))
 
     def prox_g(V: np.ndarray, t: float) -> np.ndarray:
         return soft_threshold(V, lambda1 * t)

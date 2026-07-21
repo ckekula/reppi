@@ -124,9 +124,9 @@ def fidelity_value(
         if k == i:
             Di_recon = Pk
         else:
-            val += float(np.sum(Pk ** 2))
-    val += float(np.sum((Ai - recon) ** 2))       # replaces D_full @ Xi
-    val += float(np.sum((Ai - Di_recon) ** 2))
+            val += np.float32(np.sum(Pk ** 2))
+    val += np.float32(np.sum((Ai - recon) ** 2))       # replaces D_full @ Xi
+    val += np.float32(np.sum((Ai - Di_recon) ** 2))
     return val
 
 
@@ -192,7 +192,7 @@ class OtherClassStats:
                 continue
             mk = Xk.mean(axis=1)
             n_total += sizes[k]
-            weighted_sq_norm_sum += sizes[k] * float(np.sum(mk ** 2))
+            weighted_sq_norm_sum += sizes[k] * np.float32(np.sum(mk ** 2))
             contribution = sizes[k] * mk
             weighted_sum = contribution if weighted_sum is None else weighted_sum + contribution
         self.n_total = n_total  # sum of sizes over j != exclude only
@@ -237,7 +237,7 @@ class GlobalMeanTracker:
             s * m for s, m in zip(self.sizes, self.means)
         )
         self.weighted_sq_norm_sum = sum(
-            s * float(np.sum(m ** 2)) for s, m in zip(self.sizes, self.means)
+            s * np.float32(np.sum(m ** 2)) for s, m in zip(self.sizes, self.means)
         )
 
     def exclude(self, i: int) -> OtherClassStats:
@@ -247,7 +247,7 @@ class GlobalMeanTracker:
         stats = object.__new__(OtherClassStats)
         stats.n_total = self.n_total - s
         stats.weighted_mean_sum = self.weighted_mean_sum - s * mi
-        stats.weighted_sq_norm_sum = self.weighted_sq_norm_sum - s * float(
+        stats.weighted_sq_norm_sum = self.weighted_sq_norm_sum - s * np.float32(
             np.sum(mi ** 2)
         )
         return stats
@@ -259,7 +259,7 @@ class GlobalMeanTracker:
         new_mean = Xi_new.mean(axis=1)
         self.weighted_mean_sum += s * (new_mean - old_mean)
         self.weighted_sq_norm_sum += s * (
-            float(np.sum(new_mean ** 2)) - float(np.sum(old_mean ** 2))
+            np.float32(np.sum(new_mean ** 2)) - np.float32(np.sum(old_mean ** 2))
         )
         self.means[i] = new_mean
 
@@ -273,9 +273,9 @@ def coef_value(Xi: np.ndarray, i: int, stats: OtherClassStats, eta: float) -> fl
     c0 = 0.0 if stats.weighted_mean_sum is None else stats.weighted_mean_sum / n
     m = (Xi.sum(axis=1) / n) + c0
 
-    within = float(np.sum((Xi - mi[:, None]) ** 2))
+    within = np.float32(np.sum((Xi - mi[:, None]) ** 2))
 
-    between = ni * float(np.sum((mi - m) ** 2))
+    between = ni * np.float32(np.sum((mi - m) ** 2))
     if stats.weighted_mean_sum is not None:
         # closed form of sum_{k!=i} sizes[k]*||mk-m||^2 from the cached
         # running totals, instead of looping over every other class's
@@ -283,11 +283,11 @@ def coef_value(Xi: np.ndarray, i: int, stats: OtherClassStats, eta: float) -> fl
         #     = sum_k sk*||mk||^2 - 2*m.(sum_k sk*mk) + ||m||^2*sum_k sk
         between += (
             stats.weighted_sq_norm_sum
-            - 2.0 * float(m @ stats.weighted_mean_sum)
-            + stats.n_total * float(np.sum(m ** 2))
+            - 2.0 * np.float32(m @ stats.weighted_mean_sum)
+            + stats.n_total * np.float32(np.sum(m ** 2))
         )
 
-    return within - between + eta * float(np.sum(Xi ** 2))
+    return within - between + eta * np.float32(np.sum(Xi ** 2))
 
 
 def coef_grad(Xi: np.ndarray, i: int, stats: OtherClassStats, eta: float) -> np.ndarray:
@@ -326,9 +326,9 @@ def global_fisher_value(X_list: Sequence[np.ndarray], eta: float) -> float:
     means = [Xk.mean(axis=1) for Xk in X_list]
     m = sum(sizes[k] * means[k] for k in range(len(X_list))) / n
 
-    sq_norms = [float(np.sum(Xk ** 2)) for Xk in X_list]  # shared by sw & reg
-    sw = sum(sq_norms[k] - sizes[k] * float(means[k] @ means[k]) for k in range(len(X_list)))
-    sb = sum(sizes[k] * float(np.sum((means[k] - m) ** 2)) for k in range(len(X_list)))
+    sq_norms = [np.float32(np.sum(Xk ** 2)) for Xk in X_list]  # shared by sw & reg
+    sw = sum(sq_norms[k] - sizes[k] * np.float32(means[k] @ means[k]) for k in range(len(X_list)))
+    sb = sum(sizes[k] * np.float32(np.sum((means[k] - m) ** 2)) for k in range(len(X_list)))
     reg = sum(sq_norms)
     return sw - sb + eta * reg
 

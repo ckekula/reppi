@@ -201,7 +201,7 @@ class FDDL():
         -------
         self
         """
-        X = np.asarray(X, dtype=float)
+        X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y)
         n_features, n_samples = X.shape
         if y.shape[0] != n_samples:
@@ -261,15 +261,15 @@ class FDDL():
                         f"D_init has {len(D_init)} sub-dictionaries but there are "
                         f"{n_classes} classes."
                     )
-                D_list = [normalize_columns(np.asarray(Di, dtype=float)) for Di in D_init]
+                D_list = [normalize_columns(np.asarray(Di, dtype=np.float32)) for Di in D_init]
                 for Di in D_list:
                     _check_dict_normalized(Di)
             else:
                 # Table 1, step 1: random unit-norm atoms.
                 D_list = [
-                    normalize_columns(rng.randn(n_features, p)) for p in atoms_per_class
+                    normalize_columns(rng.randn(n_features, p), dtype=np.float32) for p in atoms_per_class
                 ]
-            X_list = [np.zeros((n_atoms, sizes[i])) for i in range(n_classes)]
+            X_list = [np.zeros((n_atoms, sizes[i]), dtype=np.float32) for i in range(n_classes)]
 
         D_full = np.hstack(D_list)
 
@@ -329,7 +329,7 @@ class FDDL():
             for i in range(n_classes):
                 logger.info(f"Computing fidelity value for class {i}")
                 obj += fidelity_value(X_list[i], i, D_list, D_full, A_list[i], atom_boundaries)
-                obj += self.lambda1 * float(np.sum(np.abs(X_list[i])))
+                obj += self.lambda1 * np.float32(np.sum(np.abs(X_list[i])))
             self.objective_history_.append(obj)
 
             if self.verbose:

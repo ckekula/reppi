@@ -80,8 +80,8 @@ class LARSLasso(BaseSparseCoder):
         -------
         Gamma : np.ndarray, shape (n_atoms, n_samples)
         """
-        X = np.asarray(X, dtype=float)
-        D = np.asarray(D, dtype=float)
+        X = np.asarray(X, dtype=np.float32)
+        D = np.asarray(D, dtype=np.float32)
 
         if X.ndim == 1:
             X = X[:, np.newaxis]
@@ -94,7 +94,7 @@ class LARSLasso(BaseSparseCoder):
 
         n_atoms = D.shape[1]
         n_samples = X.shape[1]
-        Gamma = np.zeros((n_atoms, n_samples))
+        Gamma = np.zeros((n_atoms, n_samples), dtype=np.float32)
         for i in range(n_samples):
             Gamma[:, i] = lars_lasso_cholesky(
                 D,

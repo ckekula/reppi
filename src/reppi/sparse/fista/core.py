@@ -48,7 +48,7 @@ class FISTAResult:
 
 def _inner(a: np.ndarray, b: np.ndarray) -> float:
     """Real inner product; valid for vectors or matrices (Frobenius)."""
-    return float(np.vdot(a, b))
+    return np.float32(np.vdot(a, b))
 
 
 def _norm_sq(a: np.ndarray) -> float:
@@ -143,10 +143,10 @@ def fista(
     if max_iter < 1:
         raise ValueError("max_iter must be >= 1.")
 
-    x_prev = np.asarray(x0, dtype=float).copy()  # x_0
+    x_prev = np.asarray(x0, dtype=np.float32).copy()  # x_0
     y = x_prev.copy()  # y_1 = x_0
     t = 1.0  # t_1 = 1
-    Lk = float(L) if mode == "constant" else float(L0)
+    Lk = np.float32(L) if mode == "constant" else np.float32(L0)
 
     obj_history: List[float] = []
     converged = False
@@ -190,8 +190,8 @@ def fista(
             obj_history.append(f_xk + g_xk)
 
         if tol is not None:
-            denom = max(1.0, float(np.linalg.norm(x_prev)))
-            if float(np.linalg.norm(x_diff)) / denom < tol:
+            denom = max(1.0, np.float32(np.linalg.norm(x_prev)))
+            if np.float32(np.linalg.norm(x_diff)) / denom < tol:
                 x_prev = x_k
                 converged = True
                 break

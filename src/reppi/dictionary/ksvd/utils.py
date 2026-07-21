@@ -56,7 +56,7 @@ def _optimize_atom(
         best = int(np.argmax(err))
         atom = X[:, candidates[best]]
         atom = atom / max(np.linalg.norm(atom), 1e-14)
-        gamma_j = np.zeros(len(data_indices))
+        gamma_j = np.zeros(len(data_indices), dtype=np.float32)
         
         # Remove used signal from the pool
         mask = np.ones(len(unused_sigs), dtype=bool)
