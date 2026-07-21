@@ -180,7 +180,8 @@ def fista(
 
         # eqs. (4.2)-(4.3): momentum update and extrapolation point.
         t_next = (1.0 + np.sqrt(1.0 + 4.0 * t * t)) / 2.0
-        y = x_k + ((t - 1.0) / t_next) * (x_k - x_prev)
+        x_diff = x_k - x_prev
+        y = x_k + ((t - 1.0) / t_next) * (x_diff)
 
         if f is not None and g is not None:
             if f_xk is None or g_xk is None:  # mode == "constant"
@@ -190,7 +191,7 @@ def fista(
 
         if tol is not None:
             denom = max(1.0, float(np.linalg.norm(x_prev)))
-            if float(np.linalg.norm(x_k - x_prev)) / denom < tol:
+            if float(np.linalg.norm(x_diff)) / denom < tol:
                 x_prev = x_k
                 converged = True
                 break

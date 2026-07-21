@@ -52,7 +52,6 @@ import os
 import numpy as np
 import logging
 
-from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.dictionary.bcd.utils import bcd_dictionary_update
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.utils import _check_dict_normalized, normalize_columns
@@ -72,7 +71,7 @@ logger = logging.getLogger(__name__)
 _CHECKPOINT_FILENAME = "fddl_checkpoint.npz"
 
 
-class FDDL(BaseDiscriminativeDictionaryLearner):
+class FDDL():
     """
     Fisher Discrimination Dictionary Learning.
 
@@ -314,7 +313,9 @@ class FDDL(BaseDiscriminativeDictionaryLearner):
                 Di_updated = bcd_dictionary_update(
                     D_list[i], A_stat, B_stat, 0, self.dict_max_iter, self.dict_tol
                 )
+                del A_stat, B_stat
                 Di_new = normalize_columns(Di_updated)
+                del Di_updated
 
                 # Patch the running sum in place of a full O(n_classes) rebuild.
                 D_full_sum += Di_new @ row_block(i) - D_list[i] @ row_block(i)

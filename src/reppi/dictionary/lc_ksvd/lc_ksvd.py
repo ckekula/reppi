@@ -388,6 +388,8 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             del D_aug_norm
             D_aug_updated = atom_updater.D_
             Gamma = atom_updater.Gamma_
+            atom_updater.D_ = None
+            atom_updater.Gamma_ = None
 
             # De-augment: extract D, A, W from the updated augmented dict
             D, A, W = self._split_aug_dict(
@@ -410,6 +412,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
         self.D_ = D
         self.A_ = A
+        del X_aug, Gamma, Q
 
         # ---- Classifier ----
         if self.variant == "lcksvd1":
@@ -419,7 +422,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             clf = self.classifier if self.classifier is not None else RidgeClassifier(
                 lambda1=self.lambda1
             )
-            Gamma_final = self.transform(X) if self.D_ is not None else Gamma
+            Gamma_final = self.transform(X)
             clf.fit(Gamma_final, H)
             self.classifier_ = clf
             # Mirror a linear W_ for convenience/back-compat when the

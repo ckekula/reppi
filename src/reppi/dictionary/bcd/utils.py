@@ -50,9 +50,9 @@ def bcd_dictionary_update(
     n_total = D.shape[1]
     R = B - D @ A
     
-    for _ in tqdm(range(max_iter), desc="BCD iterations"):
+    for _ in range(max_iter):
         max_change = 0.0
-        for j in range(n_frozen, n_total):
+        for j in tqdm(range(n_frozen, n_total), desc="BCD iterations"):
             ajj = A[j, j]
             if ajj <= 1e-12:
                 continue
