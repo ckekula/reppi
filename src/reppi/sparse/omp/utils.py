@@ -5,6 +5,9 @@ from scipy import linalg
 
 logger = logging.getLogger(__name__)
 
+_CHOLESKY_FLOOR = 1e-14
+
+
 def omp_cholesky(
     D: np.ndarray,
     x: np.ndarray,
@@ -28,37 +31,48 @@ def omp_cholesky(
         Sparse representation of x.
     """
     n_atoms = D.shape[1]
-    residual = x.copy().astype(float)
+    residual = x.copy().astype(np.float64)
     support: list[int] = []
+    selected_mask = np.zeros(n_atoms, dtype=bool)
     gamma = np.zeros(n_atoms, dtype=np.float32)
 
-    # Cholesky factor of D[:,support].T @ D[:,support]
-    L = np.zeros((n_nonzero, n_nonzero), dtype=np.float32)
+    # Cholesky factor kept in float64 — this recursion is numerically
+    # sensitive and accumulates rounding error across iterations; running
+    # it in float32 causes 1 - v@v to go negative / c to diverge to Inf/NaN
+    L = np.zeros((n_nonzero, n_nonzero), dtype=np.float64)
 
     for k in range(n_nonzero):
         correlations = D.T @ residual
-        j = int(np.argmax(np.abs(correlations)))
+        masked = np.where(selected_mask, -np.inf, np.abs(correlations))
+        j = int(np.argmax(masked))
         support.append(j)
+        selected_mask[j] = True
 
         # --- Cholesky update ---
         Ds = D[:, support]
         if k == 0:
             L[0, 0] = 1.0
         else:
-            w = Ds[:, :-1].T @ D[:, j]  # (k,)
-            # Solve L[:k,:k] * v = w
+            w = (Ds[:, :-1].T @ D[:, j]).astype(np.float64)
             v = linalg.solve_triangular(L[:k, :k], w, lower=True)
-            l_new = np.sqrt(max(1.0 - np.float32(v @ v), 1e-14))
+            proj = 1.0 - v @ v
+            if proj < _CHOLESKY_FLOOR:
+                logger.warning(
+                    "omp_cholesky: near-singular Cholesky update at k=%d "
+                    "(1 - v@v = %.3e, atom %d nearly linearly dependent on "
+                    "already-selected support %s). Clamping to floor; "
+                    "consider checking dictionary for near-duplicate atoms.",
+                    k, proj, j, support[:-1],
+                )
+            l_new = np.sqrt(max(proj, _CHOLESKY_FLOOR))
             L[k, :k] = v
             L[k, k] = l_new
 
-        # Solve (L L.T) c = Ds.T x
-        rhs = Ds.T @ x
-
+        rhs = (Ds.T @ x).astype(np.float64)
         Lt = L[: k + 1, : k + 1]
         y = linalg.solve_triangular(Lt, rhs, lower=True)
         c = linalg.solve_triangular(Lt.T, y, lower=False)
-        residual = x - Ds @ c
+        residual = x.astype(np.float64) - Ds @ c
 
     gamma[support] = c
     return gamma
@@ -91,32 +105,42 @@ def batch_omp(
 
     for i in tqdm(range(n_samples), desc="Processing samples with Batch-OMP"):
         dtx = DtX[:, i]
-        residual_proj = dtx.copy()
+        residual_proj = dtx.astype(np.float64)
         support: list[int] = []
-        L = np.zeros((n_nonzero, n_nonzero), dtype=np.float32)
+        selected_mask = np.zeros(n_atoms, dtype=bool)
+        L = np.zeros((n_nonzero, n_nonzero), dtype=np.float64)
 
         for k in range(n_nonzero):
-            j = int(np.argmax(np.abs(residual_proj)))
+            masked = np.where(selected_mask, -np.inf, np.abs(residual_proj))
+            j = int(np.argmax(masked))
             support.append(j)
+            selected_mask[j] = True
 
-            # Cholesky update using Gram matrix
             if k == 0:
                 L[0, 0] = 1.0
             else:
-                w = G[support[:-1], j]  # (k,)
+                w = G[support[:-1], j].astype(np.float64)
                 v = linalg.solve_triangular(L[:k, :k], w, lower=True)
-                l_new = np.sqrt(max(1.0 - np.float32(v @ v), 1e-14))
+                proj = 1.0 - v @ v
+                if proj < _CHOLESKY_FLOOR:
+                    logger.warning(
+                        "batch_omp: near-singular Cholesky update at sample=%d "
+                        "k=%d (1 - v@v = %.3e, atom %d nearly linearly "
+                        "dependent on already-selected support %s). Clamping "
+                        "to floor; consider checking dictionary for "
+                        "near-duplicate atoms.",
+                        i, k, proj, j, support[:-1],
+                    )
+                l_new = np.sqrt(max(proj, _CHOLESKY_FLOOR))
                 L[k, :k] = v
                 L[k, k] = l_new
 
-            # Solve (L L.T) c = DtX[support, i]
-            rhs = dtx[support]
+            rhs = dtx[support].astype(np.float64)
             Lt = L[: k + 1, : k + 1]
             y = linalg.solve_triangular(Lt, rhs, lower=True)
             c = linalg.solve_triangular(Lt.T, y, lower=False)
 
-            # Update residual in projection space
-            residual_proj = dtx - G[:, support] @ c
+            residual_proj = dtx.astype(np.float64) - G[:, support] @ c
 
         Gamma[support, i] = c
 

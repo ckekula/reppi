@@ -307,15 +307,45 @@ class KSVD(BaseDictionaryLearner):
                     f"D_init shape {D.shape} does not match "
                     f"(n_features={n_features}, n_components={k})."
                 )
-        else:
-            valid = np.where(col_norms_squared(X) > 1e-6)[0]
-            if len(valid) < k:
-                raise DictionaryLearningError(
-                    "Not enough non-zero training signals to initialise the dictionary."
-                )
-            chosen = rng.choice(valid, size=k, replace=False)
-            D = X[:, chosen].copy()
+            return normalize_columns(D)
 
+        valid = np.where(col_norms_squared(X) > 1e-6)[0]
+        if len(valid) < k:
+            raise DictionaryLearningError(
+                "Not enough non-zero training signals to initialise the dictionary."
+            )
+
+        # Greedily pick columns, rejecting candidates too coherent with atoms
+        # already chosen (same incoherence threshold used by _clear_dict).
+        candidates = rng.permutation(valid)
+        X_norm = normalize_columns(X[:, candidates].copy())
+
+        chosen_idx: list[int] = []
+        for pos in range(len(candidates)):
+            if len(chosen_idx) == k:
+                break
+            cand_col = X_norm[:, pos]
+            if chosen_idx:
+                chosen_cols = X_norm[:, chosen_idx]
+                max_coh = np.abs(chosen_cols.T @ cand_col).max()
+                if max_coh > self.mu_thresh:
+                    continue
+            chosen_idx.append(pos)
+
+        if len(chosen_idx) < k:
+            logger.warning(
+                "_init_dict: only found %d/%d mutually-incoherent candidate "
+                "atoms (mu_thresh=%.3f) among %d valid signals; falling back "
+                "to filling remaining atoms without the incoherence check. "
+                "This suggests significant redundancy/near-duplication in the "
+                "training data for this class.",
+                len(chosen_idx), k, self.mu_thresh, len(valid),
+            )
+            remaining_needed = k - len(chosen_idx)
+            remaining_pool = [p for p in range(len(candidates)) if p not in chosen_idx]
+            chosen_idx.extend(remaining_pool[:remaining_needed])
+
+        D = X[:, candidates[chosen_idx]].copy()
         return normalize_columns(D)
 
     def _sparse_code(
