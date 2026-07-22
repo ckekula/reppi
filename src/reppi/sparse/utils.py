@@ -5,17 +5,28 @@ Utility functions shared across sparse coding algorithms.
 from __future__ import annotations
 
 import numpy as np
+import torch
 from reppi.exceptions import DictionaryNormalizationError
 
 
-def normalize_columns(D: np.ndarray) -> np.ndarray:
+def _check_dict_normalized(D: torch.Tensor, tol: float = 1e-2) -> None:
+    """Raise if any atom of D deviates from unit L2-norm by more than tol."""
+    norms = torch.sqrt((D * D).sum(dim=0))
+    if torch.any(torch.abs(norms - 1.0) > tol):
+        raise DictionaryNormalizationError(
+            "Dictionary columns must be normalized to unit L2-norm. "
+            f"Got norms in range [{float(norms.min()):.4f}, {float(norms.max()):.4f}]."
+        )
+ 
+ 
+def normalize_columns(D: torch.Tensor) -> torch.Tensor:
     """Return D with each column scaled to unit L2-norm.
-
+ 
     Columns whose norm is below 1e-10 are left unchanged to avoid division
     by zero.
     """
-    norms = np.sqrt((D * D).sum(axis=0))
-    norms = np.where(norms < 1e-10, 1.0, norms)
+    norms = torch.sqrt((D * D).sum(dim=0))
+    norms = torch.where(norms < 1e-10, torch.ones_like(norms), norms)
     return D / norms
 
 
@@ -66,13 +77,3 @@ def rep_error_squared(
         diff = X[:, start:end] - D @ Gamma[:, start:end]
         err2[start:end] = (diff ** 2).sum(axis=0)
     return err2
-
-
-def _check_dict_normalized(D: np.ndarray, tol: float = 1e-2) -> None:
-    """Raise if any atom of D deviates from unit L2-norm by more than tol."""
-    norms = np.sqrt((D * D).sum(axis=0))
-    if np.any(np.abs(norms - 1.0) > tol):
-        raise DictionaryNormalizationError(
-            "Dictionary columns must be normalized to unit L2-norm. "
-            f"Got norms in range [{norms.min():.4f}, {norms.max():.4f}]."
-        )

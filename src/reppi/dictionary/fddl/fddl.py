@@ -35,6 +35,17 @@ from the typeset Eq. 7/8/Appendix A; see the module docstring of
 ``reppi.dictionary.fddl.utils`` for the derivation and its
 finite-difference / direct-computation verification.
 
+Backend
+-------
+GPU-only: ``fit`` requires a CUDA or MPS device and raises otherwise
+(no silent CPU fallback). ``X``/``y``/``D_init`` are accepted as numpy
+arrays (the public API surface); internally everything is moved to the
+GPU once and the full alternating-optimization loop runs there as
+torch tensors. Checkpoints are still written as numpy .npz (so they're
+portable/inspectable without torch), and the fitted attributes
+(``D_``, ``D_list_``, ``X_list_``) are converted back to numpy at the
+end of ``fit`` — downstream consumers are not assumed to be GPU-aware.
+
 Usage
 -----
     model = FDDL(
@@ -50,6 +61,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
+import torch
 import logging
 
 from reppi.dictionary.bcd.utils import bcd_dictionary_update
@@ -69,6 +81,23 @@ from reppi.dictionary.fddl.utils import (
 logger = logging.getLogger(__name__)
 
 _CHECKPOINT_FILENAME = "fddl_checkpoint.npz"
+
+
+def _require_gpu_device() -> torch.device:
+    """Resolve a GPU device for GPU-only operation; raises if none exists."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return torch.device("mps")
+    raise RuntimeError(
+        "FDDL.fit() requires a GPU (CUDA or MPS) device; none was found. "
+        "This implementation runs GPU-only and does not fall back to CPU."
+    )
+
+
+def _to_device(arr, device: torch.device) -> torch.Tensor:
+    """Convert a numpy array (or array-like) to a float32 tensor on `device`."""
+    return torch.as_tensor(np.asarray(arr, dtype=np.float32), device=device)
 
 
 class FDDL():
@@ -107,11 +136,13 @@ class FDDL():
     ----------
     D_list_ : list of np.ndarray
         Learned per-class sub-dictionaries, D_list_[i] has shape
-        (n_features, p_i).
+        (n_features, p_i). Converted to numpy at the end of `fit`
+        (computed on GPU internally).
     D_ : np.ndarray, shape (n_features, n_components)
         Learned dictionary, horizontally stacked D_list_.
     X_list_ : list of np.ndarray
         Learned per-class coding coefficients (full n_components rows).
+        Converted to numpy at the end of `fit`.
     atom_boundaries_ : dict[int, tuple[int, int]]
         Atom row-range owned by each class within D_/X_list_[*].
     classes_ : np.ndarray
@@ -201,6 +232,8 @@ class FDDL():
         -------
         self
         """
+        device = _require_gpu_device()
+
         X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y)
         n_features, n_samples = X.shape
@@ -223,11 +256,15 @@ class FDDL():
                 "Every class needs >= 2 samples (class means/scatter are undefined otherwise)."
             )
         sample_boundaries = block_boundaries(sizes)
+
+        # Move the training signals to the GPU once
+        X_t = torch.as_tensor(X, device=device)
+        sample_order_t = torch.as_tensor(sample_order, dtype=torch.long, device=device)
         A_list = [
-            X[:, sample_order[s:e]] for s, e in (sample_boundaries[i] for i in range(n_classes))
+            X_t[:, sample_order_t[s:e]]
+            for s, e in (sample_boundaries[i] for i in range(n_classes))
         ]
-        
-        A_full = np.hstack(A_list)
+        A_full = torch.hstack(A_list)
 
         atoms_per_class = resolve_atoms_per_class(self.n_components, n_classes)
         atom_boundaries = block_boundaries(atoms_per_class)
@@ -248,6 +285,9 @@ class FDDL():
                 D_list, X_list, self.objective_history_, start_iter = self._load_checkpoint(
                     checkpoint_path, n_classes
                 )
+                # Checkpoints are numpy on disk; move the resumed state to GPU.
+                D_list = [_to_device(Di, device) for Di in D_list]
+                X_list = [_to_device(Xi, device) for Xi in X_list]
                 if self.verbose:
                     print(
                         f"Resuming from checkpoint at outer iteration "
@@ -261,17 +301,21 @@ class FDDL():
                         f"D_init has {len(D_init)} sub-dictionaries but there are "
                         f"{n_classes} classes."
                     )
-                D_list = [normalize_columns(np.asarray(Di, dtype=np.float32)) for Di in D_init]
+                D_list = [normalize_columns(_to_device(Di, device)) for Di in D_init]
                 for Di in D_list:
                     _check_dict_normalized(Di)
             else:
                 # Table 1, step 1: random unit-norm atoms.
                 D_list = [
-                    normalize_columns(rng.randn(n_features, p)) for p in atoms_per_class
+                    normalize_columns(_to_device(rng.randn(n_features, p), device))
+                    for p in atoms_per_class
                 ]
-            X_list = [np.zeros((n_atoms, sizes[i]), dtype=np.float32) for i in range(n_classes)]
+            X_list = [
+                torch.zeros((n_atoms, sizes[i]), dtype=torch.float32, device=device)
+                for i in range(n_classes)
+            ]
 
-        D_full = np.hstack(D_list)
+        D_full = torch.hstack(D_list)
 
         for it in range(start_iter, self.n_iter):
             # ---- Step 2 (Eq. 7): update X class-by-class, D fixed ----
@@ -297,11 +341,12 @@ class FDDL():
                 tracker.update(i, Xi_new)
 
             # ---- Step 3 (Eq. 8): update D class-by-class, X fixed ----
-            X_full_stacked = np.hstack(X_list)
-            def row_block(k: int) -> np.ndarray:
+            X_full_stacked = torch.hstack(X_list)
+
+            def row_block(k: int) -> torch.Tensor:
                 s, e = atom_boundaries[k]
                 return X_full_stacked[s:e, :]
-            
+
             D_full_sum = sum(Dj @ row_block(j) for j, Dj in enumerate(D_list))
 
             for i in range(n_classes):
@@ -310,6 +355,9 @@ class FDDL():
                     i, D_list[i], D_full_sum, A_list, atom_boundaries,
                     X_full_stacked=X_full_stacked, A_full=A_full, sample_boundaries=sample_boundaries,
                 )
+                # bcd_dictionary_update mutates its D argument in place
+                # and returns that same tensor object.
+                old_contrib = D_list[i] @ row_block(i)
                 Di_updated = bcd_dictionary_update(
                     D_list[i], A_stat, B_stat, 0, self.dict_max_iter, self.dict_tol
                 )
@@ -318,18 +366,18 @@ class FDDL():
                 del Di_updated
 
                 # Patch the running sum in place of a full O(n_classes) rebuild.
-                D_full_sum += Di_new @ row_block(i) - D_list[i] @ row_block(i)
+                D_full_sum = D_full_sum + Di_new @ row_block(i) - old_contrib
                 D_list[i] = Di_new
 
-            D_full = np.hstack(D_list)
+            D_full = torch.hstack(D_list)
 
             # ---- Objective (Eq. 6) for convergence tracking ----
             logger.info("Computing global fischer value")
             obj = self.lambda2 * global_fisher_value(X_list, self.eta)
             for i in range(n_classes):
                 logger.info(f"Computing fidelity value for class {i}")
-                obj += fidelity_value(X_list[i], i, D_list, D_full, A_list[i], atom_boundaries)
-                obj += self.lambda1 * np.float32(np.sum(np.abs(X_list[i])))
+                obj += fidelity_value(X_list[i], i, D_list, A_list[i], atom_boundaries)
+                obj += self.lambda1 * float(torch.sum(torch.abs(X_list[i])))
             self.objective_history_.append(obj)
 
             if self.verbose:
@@ -340,15 +388,16 @@ class FDDL():
 
             if (
                 self.tol is not None
-                and it > start_iter
+                and len(self.objective_history_) >= 2
                 and abs(self.objective_history_[-2] - obj) < self.tol * abs(self.objective_history_[-2])
             ):
                 if self.verbose:
                     print(f"[FDDL] Converged at iteration {it + 1}.")
                 break
 
-        self.D_list_ = D_list
-        self.X_list_ = X_list
+        # Public attributes: converted back to numpy here.
+        self.D_list_ = [Di.detach().cpu().numpy() for Di in D_list]
+        self.X_list_ = [Xi.detach().cpu().numpy() for Xi in X_list]
         self.atom_boundaries_ = atom_boundaries
         self.classes_ = classes
         self.sample_order_ = sample_order
@@ -368,8 +417,8 @@ class FDDL():
         tmp_path = path + ".tmp.npz"
         payload = {"n_classes": len(D_list), "history": np.array(history), "iteration": iteration}
         for i, (Di, Xi) in enumerate(zip(D_list, X_list)):
-            payload[f"D_{i}"] = Di
-            payload[f"X_{i}"] = Xi
+            payload[f"D_{i}"] = Di.detach().cpu().numpy()
+            payload[f"X_{i}"] = Xi.detach().cpu().numpy()
         np.savez(tmp_path, **payload)
         os.replace(tmp_path, path)
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-import numpy as np
+import torch
 
 from reppi.sparse.fista.core import fista as fista_core
 from reppi.sparse.fista.utils import soft_threshold
@@ -39,11 +39,11 @@ from reppi.dictionary.fddl.utils import (
 
 
 def solve_class_codes(
-    Xi0: np.ndarray,
+    Xi0: torch.Tensor,
     i: int,
-    D_list: Sequence[np.ndarray],
-    D_full: np.ndarray,
-    Ai: np.ndarray,
+    D_list: Sequence[torch.Tensor],
+    D_full: torch.Tensor,
+    Ai: torch.Tensor,
     atom_boundaries: dict[int, tuple[int, int]],
     other_stats: OtherClassStats,
     lambda1: float,
@@ -53,20 +53,20 @@ def solve_class_codes(
     tol: float | None = 1e-6,
     L0: float = 1.0,
     backtrack_eta: float = 2.0,
-) -> tuple[np.ndarray, int, list[float]]:
+) -> tuple[torch.Tensor, int, list[float]]:
     """
     Solve Eq. (7) for one class's coefficients Xi, with D and all other
     classes' coefficients fixed.
 
     Parameters
     ----------
-    Xi0 : np.ndarray, shape (n_atoms, n_i)
+    Xi0 : torch.Tensor, shape (n_atoms, n_i)
         Warm-start iterate (typically the previous outer iteration's Xi).
     i : int
         Class index being solved.
     D_list, D_full : per-class sub-dictionaries and their horizontal
         stack.
-    Ai : np.ndarray, shape (n_features, n_i)
+    Ai : torch.Tensor, shape (n_features, n_i)
         Training signals of class i.
     atom_boundaries : dict mapping class -> (start, end) atom row-range.
     other_stats : OtherClassStats
@@ -78,25 +78,25 @@ def solve_class_codes(
 
     Returns
     -------
-    Xi : np.ndarray
+    Xi : torch.Tensor
     n_iter : int
     objective_history : list of float
     """
 
-    def grad_smooth(Xi: np.ndarray) -> np.ndarray:
+    def grad_smooth(Xi: torch.Tensor) -> torch.Tensor:
         return fidelity_grad(Xi, i, D_list, D_full, Ai, atom_boundaries) + lambda2 * coef_grad(
             Xi, i, other_stats, eta
         )
 
-    def f(Xi: np.ndarray) -> float:
+    def f(Xi: torch.Tensor) -> float:
         return fidelity_value(Xi, i, D_list, Ai, atom_boundaries) + lambda2 * coef_value(
             Xi, i, other_stats, eta
         )
-
-    def g(Xi: np.ndarray) -> float:
-        return np.float32(lambda1 * np.sum(np.abs(Xi)))
-
-    def prox_g(V: np.ndarray, t: float) -> np.ndarray:
+ 
+    def g(Xi: torch.Tensor) -> float:
+        return float(lambda1 * torch.sum(torch.abs(Xi)))
+ 
+    def prox_g(V: torch.Tensor, t: float) -> torch.Tensor:
         return soft_threshold(V, lambda1 * t)
 
     result = fista_core(

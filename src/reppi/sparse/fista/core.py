@@ -42,8 +42,8 @@ import logging
 try:
     import torch
     _TORCH_AVAILABLE = True
-except ImportError:  # torch is optional; numpy-only usage still works
-    torch = None  # type: ignore[assignment]
+except ImportError:
+    torch = None
     _TORCH_AVAILABLE = False
 
 Array = Union[np.ndarray, "torch.Tensor"]

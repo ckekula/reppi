@@ -8,29 +8,29 @@ Implements Algorithm 2 of:
 
 from __future__ import annotations
 
-import numpy as np
+import torch
 from tqdm import tqdm
 
 def bcd_dictionary_update(
-    D: np.ndarray,
-    A: np.ndarray,
-    B: np.ndarray,
+    D: torch.Tensor,
+    A: torch.Tensor,
+    B: torch.Tensor,
     n_frozen: int,
     max_iter: int = 1,
     tol: float = 1e-6,
-) -> np.ndarray:
+) -> torch.Tensor:
     """
     Block-coordinate descent update of the dictionary columns (Eq. 10),
     warm-started from the current D. Frozen columns (index < n_frozen)
     are always skipped, mirroring KSVD's frozen-atom contract.
-
+ 
     Parameters
     ----------
-    D : np.ndarray, shape (n_features, n_total)
+    D : torch.Tensor, shape (n_features, n_total)
         Current dictionary (warm start). Updated and returned in place.
-    A : np.ndarray, shape (n_total, n_total)
+    A : torch.Tensor, shape (n_total, n_total)
         Accumulated Sum alpha_i @ alpha_i.T (with forgetting factor).
-    B : np.ndarray, shape (n_features, n_total)
+    B : torch.Tensor, shape (n_features, n_total)
         Accumulated Sum x_i @ alpha_i.T (with forgetting factor).
     n_frozen : int
         Number of leading frozen columns, never updated.
@@ -42,27 +42,35 @@ def bcd_dictionary_update(
         Stop sweeping early once the largest column change (L2 norm)
         across a full sweep drops below this value.
 
+    Note on sequencing
+    ------------------
+    The inner loop over columns is intentionally sequential (Gauss-Seidel):
+    each column's update reads `R`, which was just updated by the
+    previous column. This is not a batch dimension to vectorize away —
+    GPU benefit here comes from each column's own ops (norm, outer product
+    over n_features) running on-device, not from batching columns.
+
     Returns
     -------
-    D : np.ndarray
-        Updated dictionary (same array, returned for convenience).
+    D : torch.Tensor
+        Updated dictionary.
     """
     n_total = D.shape[1]
     R = B - D @ A
-    
+
     for _ in range(max_iter):
         max_change = 0.0
         for j in tqdm(range(n_frozen, n_total), desc="BCD iterations"):
-            ajj = A[j, j]
+            ajj = float(A[j, j])
             if ajj <= 1e-12:
                 continue
             u_j = R[:, j] / ajj + D[:, j]
-            norm_u = np.linalg.norm(u_j)
+            norm_u = float(torch.linalg.norm(u_j))
             d_j_new = u_j / max(norm_u, 1.0)
             delta = d_j_new - D[:, j]
-            change = np.float32(np.linalg.norm(delta))
+            change = float(torch.linalg.norm(delta))
             max_change = max(max_change, change)
-            R -= np.outer(delta, A[j, :])  # keep R consistent with new D[:, j]
+            R -= torch.outer(delta, A[j, :])  # keep R consistent with new D[:, j]
             D[:, j] = d_j_new
         if max_change < tol:
             break
