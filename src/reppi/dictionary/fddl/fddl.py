@@ -137,6 +137,26 @@ def _to_cpu_storage(arr, pin_memory: bool) -> torch.Tensor:
     return t
 
 
+def _empty_cache(device: torch.device) -> None:
+    """Proactively return the caching allocator's freed blocks to the
+    driver after a class's GPU-resident tensors are dereferenced.
+
+    Not needed for correctness (PyTorch's allocator reuses freed blocks
+    on its own), but this codebase pushes single classes very close to
+    the device's total capacity (see FDDL.fit's module docstring), so
+    the allocator having stale free blocks sized for one class's shape
+    lying around when the *next* class's differently-shaped tensors
+    need a fresh contiguous block is a real risk, not just a
+    theoretical one. Called once per class boundary (a handful of
+    times per outer iteration) -- not on any per-FISTA-iteration hot
+    path, so the sync cost is negligible.
+    """
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps" and hasattr(torch, "mps"):
+        torch.mps.empty_cache()
+
+
 class FDDL():
     """
     Fisher Discrimination Dictionary Learning.
@@ -405,6 +425,7 @@ class FDDL():
                 tracker.update(i, Xi_new)
                 X_list[i] = _to_cpu_storage(Xi_new.detach().cpu().numpy(), self.pin_memory)
                 del Ai_gpu, Xi0_gpu, Xi_new
+                _empty_cache(device)
 
             # ---- Step 3 (Eq. 8): update D class-by-class, X fixed ----
             # Sufficient statistics are streamed in `dict_update_chunk_size`
@@ -428,6 +449,7 @@ class FDDL():
                 )
                 del A_stat, B_stat
                 D_list[i] = normalize_columns(Di_updated)
+                _empty_cache(device)
 
             D_full = torch.hstack(D_list)
 
@@ -444,6 +466,7 @@ class FDDL():
                 obj += fidelity_value(Xi_gpu, i, D_list, Ai_gpu, atom_boundaries)
                 obj += self.lambda1 * float(torch.sum(torch.abs(Xi_gpu)))
                 del Ai_gpu, Xi_gpu
+                _empty_cache(device)
             self.objective_history_.append(obj)
 
             if self.verbose:
