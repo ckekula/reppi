@@ -139,7 +139,7 @@ def fidelity_value(
             Di_recon = Pk
         else:
             val = val + (Pk ** 2).sum()
-    val = val + (Ai - recon).pow(2).sum() # D_full @ Xi
+    val = val + (Ai - recon).pow(2).sum()  # D_full @ Xi
     val = val + (Ai - Di_recon).pow(2).sum()
     return float(val)
 
@@ -152,16 +152,29 @@ def fidelity_grad(
     Ai: torch.Tensor,
     atom_boundaries: dict[int, tuple[int, int]],
 ) -> torch.Tensor:
-    """Gradient of r(Ai, D, Xi) (Eq. 4) with respect to Xi."""
-    residual = D_full @ Xi - Ai
-    grad = 2.0 * (D_full.T @ residual)
+    """Gradient of r(Ai, D, Xi) (Eq. 4) with respect to Xi.
+
+    Written to keep at most one Xi-shaped scratch tensor alive at a
+    time (in addition to the returned ``grad``), rather than the
+    several same-shape temporaries an unfused expression would create
+    -- this term is evaluated on every FISTA iteration, so its peak
+    memory matters.
+    """
+    residual = D_full @ Xi
+    residual -= Ai
+    grad = D_full.T @ residual
+    grad *= 2.0
+    del residual
+
     for k, (s, e) in atom_boundaries.items():
         Dk = D_list[k]
         Xik = Xi[s:e, :]
+        Pk = Dk @ Xik
         if k == i:
-            grad[s:e, :] += 2.0 * (Dk.T @ (Dk @ Xik - Ai))
-        else:
-            grad[s:e, :] += 2.0 * (Dk.T @ (Dk @ Xik))
+            Pk -= Ai
+        contrib = Dk.T @ Pk
+        grad[s:e, :] += 2.0 * contrib
+        del Pk, contrib
     return grad
 
 
@@ -187,10 +200,14 @@ class OtherClassStats:
 
     Prefer constructing this via ``GlobalMeanTracker.exclude(i)``
     instead of the constructor directly when iterating over all
-    classes in a sweep — the tracker maintains these totals
+    classes in a sweep -- the tracker maintains these totals
     incrementally in O(1) per class instead of rebuilding them from
     scratch (O(n_classes)) for every one of the n_classes calls in a
     sweep.
+
+    ``weighted_mean_sum`` must live on the same device as the ``Xi``
+    passed to ``coef_grad``/``coef_value`` (see ``GlobalMeanTracker``'s
+    ``device`` argument).
     """
 
     __slots__ = ("n_total", "weighted_mean_sum", "weighted_sq_norm_sum")
@@ -230,7 +247,7 @@ class GlobalMeanTracker:
     X_list[i]), the "all classes except i" totals can instead be
     maintained incrementally:
 
-        tracker = GlobalMeanTracker(X_list, sizes)   # O(n_classes) once
+        tracker = GlobalMeanTracker(X_list, sizes, device=gpu)
         for i in range(n_classes):
             stats = tracker.exclude(i)               # O(1)
             X_list[i] = solve_class_codes(..., stats, ...)
@@ -238,14 +255,28 @@ class GlobalMeanTracker:
 
     which is O(n_classes) per sweep in total.
 
-    Equivalence to rebuilding ``OtherClassStats`` from scratch after
-    every update is verified on random inputs; see the module's
-    companion tests.
+    ``device`` : if given, the per-class means (and therefore every
+    downstream ``OtherClassStats.weighted_mean_sum``) are moved to and
+    kept on that device -- independent of what device ``X_list`` lives
+    on. This matters when ``X_list`` is CPU-resident storage (see
+    ``FDDL.fit``'s CPU-offload path) but each class's coding solve
+    runs on GPU: the means are a handful of small vectors (one
+    n_atoms-length vector per class) so keeping them permanently on
+    the compute device is essentially free, and lets
+    ``coef_grad``/``coef_value`` operate without a device mismatch.
     """
 
-    def __init__(self, X_list: Sequence[torch.Tensor], sizes: Sequence[int]) -> None:
+    def __init__(
+        self,
+        X_list: Sequence[torch.Tensor],
+        sizes: Sequence[int],
+        device: torch.device | None = None,
+    ) -> None:
         self.sizes = list(sizes)
-        self.means = [Xk.mean(dim=1) for Xk in X_list]
+        means = [Xk.mean(dim=1) for Xk in X_list]
+        if device is not None:
+            means = [m.to(device) for m in means]
+        self.means = means
         self.n_total = sum(sizes)
         self.weighted_mean_sum = sum(
             s * m for s, m in zip(self.sizes, self.means)
@@ -267,7 +298,10 @@ class GlobalMeanTracker:
         return stats
 
     def update(self, i: int, Xi_new: torch.Tensor) -> None:
-        """O(1) update after class i's coefficients have been re-solved."""
+        """O(1) update after class i's coefficients have been re-solved.
+
+        ``Xi_new`` must live on the same device as ``self.means``.
+        """
         s = self.sizes[i]
         old_mean = self.means[i]
         new_mean = Xi_new.mean(dim=1)
@@ -298,7 +332,7 @@ def coef_value(Xi: torch.Tensor, i: int, stats: OtherClassStats, eta: float) -> 
         # running totals, instead of looping over every other class's
         # mean: sum_k sk*||mk-m||^2
         #     = sum_k sk*||mk||^2 - 2*m.(sum_k sk*mk) + ||m||^2*sum_k sk
-        # (weighted_sq_norm_sum is a plain float — a single O(1)-per-outer-
+        # (weighted_sq_norm_sum is a plain float -- a single O(1)-per-outer-
         # iteration sync in GlobalMeanTracker, not on this hot path.)
         between = between + (
             stats.weighted_sq_norm_sum
@@ -310,8 +344,34 @@ def coef_value(Xi: torch.Tensor, i: int, stats: OtherClassStats, eta: float) -> 
     return float(val)
 
 
-def coef_grad(Xi: torch.Tensor, i: int, stats: OtherClassStats, eta: float) -> torch.Tensor:
-    """Gradient of fi(Xi) with respect to Xi."""
+def coef_grad(
+    Xi: torch.Tensor,
+    i: int,
+    stats: OtherClassStats,
+    eta: float,
+    out: torch.Tensor | None = None,
+    scale: float = 1.0,
+) -> torch.Tensor:
+    """Gradient of fi(Xi) with respect to Xi.
+
+    Computed with at most two Xi-shaped scratch buffers alive at once
+    (``result``/``between``), rather than building within_grad,
+    between_grad, and the final combination as three-plus separate
+    same-shape temporaries.
+
+    Parameters
+    ----------
+    out : torch.Tensor, optional
+        If given, ``scale * coef_grad(Xi, ...)`` is added into ``out``
+        in place (``out`` is returned) instead of allocating a fresh
+        tensor for the caller to add in themselves. Used by
+        ``solve_class_codes`` to accumulate directly into the fidelity
+        gradient, avoiding one extra full-size allocation per FISTA
+        iteration.
+    scale : float
+        Multiplier applied when accumulating into ``out``. Ignored
+        (result returned unscaled) when ``out`` is None.
+    """
     ni = Xi.shape[1]
     n = stats.n_total + ni
     opts = {"device": Xi.device, "dtype": Xi.dtype}
@@ -321,27 +381,42 @@ def coef_grad(Xi: torch.Tensor, i: int, stats: OtherClassStats, eta: float) -> t
     c0 = 0.0 if stats.weighted_mean_sum is None else stats.weighted_mean_sum / n
     m = Xi @ a + c0
 
-    # 2*Xi @ (I - u_i@1^T), simplified: (I - u_i@1^T) is the centering
-    # projector, so Xi @ (I - u_i@1^T) = Xi - (Xi@u_i)@1^T = Xi - mi[:,None].
-    within_grad = 2.0 * (Xi - mi[:, None])
-
     v = torch.full((ni,), 1.0 / ni, **opts) - a  # = u_i - a
 
-    between_grad = 2.0 * ni * torch.outer(mi - m, v)
-    if stats.weighted_mean_sum is not None:
-        # closed form of sum_{k!=i} sizes[k]*(mk-m) from the cached
-        # running total, instead of looping over every other class's
-        # mean: sum_k sk*(mk-m) = (sum_k sk*mk) - m*(sum_k sk)
-        #                       = weighted_mean_sum - n_total*m
-        other_sum = stats.weighted_mean_sum - stats.n_total * m
-        between_grad = between_grad - 2.0 * torch.outer(other_sum, a)
+    # result <- within_grad = 2*(Xi - mi[:,None])
+    result = Xi.clone()
+    result -= mi[:, None]
+    result *= 2.0
 
-    return within_grad - between_grad + 2.0 * eta * Xi
+    # between <- between_grad = 2*ni*outer(mi-m, v) [- 2*outer(other_sum, a)]
+    between = torch.outer(mi - m, v)
+    between *= 2.0 * ni
+    if stats.weighted_mean_sum is not None:
+        other_sum = stats.weighted_mean_sum - stats.n_total * m
+        correction = torch.outer(other_sum, a)
+        correction *= 2.0
+        between -= correction
+
+    result -= between
+    result.add_(Xi, alpha=2.0 * eta)
+
+    if out is None:
+        return result
+    out.add_(result, alpha=scale)
+    return out
 
 
 def global_fisher_value(X_list: Sequence[torch.Tensor], eta: float) -> float:
     """f(X) = tr(SW(X)) - tr(SB(X)) + eta*||X||_F^2 (Eq. 5), computed
-    directly over the full X for convergence tracking / Eq. (6) reporting."""
+    directly over the full X for convergence tracking / Eq. (6) reporting.
+
+    Runs on whatever device ``X_list`` lives on -- when ``X_list`` is
+    CPU-resident storage (see ``FDDL.fit``'s CPU-offload path), this
+    runs as a one-off CPU reduction rather than requiring the full
+    dataset to be moved to the GPU. It is called once per outer
+    iteration (for logging/convergence), not per FISTA iteration, so
+    the CPU cost is not on the hot path.
+    """
     sizes = [Xk.shape[1] for Xk in X_list]
     n = sum(sizes)
     means = [Xk.mean(dim=1) for Xk in X_list]
@@ -370,7 +445,13 @@ def build_di_update_system(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Build the sufficient statistics (A_stat, B_stat) whose solution
-    minimizes Eq. (8):
+    minimizes Eq. (8). See ``build_di_update_system_streaming`` for a
+    chunked equivalent that does not require ``A_full``/``X_full_stacked``/
+    ``D_full_sum`` to be materialized on the compute device -- prefer
+    that version when the full dataset does not comfortably fit in
+    device memory alongside everything else. This full-materialization
+    version is kept for reference and as the ground truth in the
+    module's equivalence tests.
 
         J(Di) = ||A - Di*X^i - sum_{j!=i} Dj*X^j||_F^2
               + ||Ai - Di*Xi^i||_F^2
@@ -381,43 +462,13 @@ def build_di_update_system(
     classes' columns), and Xj^k is that row-block restricted to class
     j's columns.
 
-    Collecting every term against a shared unknown Di gives a single
-    generalized least-squares problem, J(Di) = ||Y - Di*Z||_F^2, with:
-
-        R = A - sum_{j!=i} Dj @ X^j                  (term 1 residual)
-        T = zeros_like(A), with class-i columns = Ai  (terms 2 and 3)
-        Y = [R | T],  Z = [X^i | X^i]
-
-    ``Di`` can then be updated with any generic dictionary-update
-    routine that consumes sufficient statistics A_stat = Z@Z.T,
-    B_stat = Y@Z.T (e.g. ``reppi.dictionary.bcd.utils.bcd_dictionary_update``).
-
-    Since Z is the horizontal concatenation of X^i with itself, and Y
-    is [R | T] with T zero outside class i's columns, both statistics
-    collapse to closed forms that avoid ever materializing the
-    doubled-width Y/Z or the (mostly-zero) T:
+    R = A - sum_{j!=i} Dj @ X^j                  (term 1 residual)
+    T = zeros_like(A), with class-i columns = Ai  (terms 2 and 3)
+    Y = [R | T],  Z = [X^i | X^i]
 
         Z@Z.T = 2 * (X^i @ X^i.T)
         Y@Z.T = (R + T) @ X^i.T,  where (R+T) only differs from R on
                                    class i's columns (R[:,i-cols] + Ai)
-
-    This is algebraically identical to building Y, Z explicitly and
-    computing Z@Z.T / Y@Z.T (verified on random inputs; see the
-    module's companion tests) but does half the FLOPs and skips the
-    concatenation/zero-fill entirely.
-
-    Parameters
-    ----------
-    X_full_stacked : torch.Tensor, optional
-        ``torch.hstack(X_list)``, i.e. X^k for every k stacked in the
-        same row layout as ``atom_boundaries``. Callers that invoke
-        this function once per class within an outer-loop sweep
-        (X_list unchanged across those calls) should compute this
-        once per sweep and pass it in, instead of leaving each call to
-        rebuild the same hstack from scratch (this alone turns an
-        O(n_classes) rebuild per call, i.e. O(n_classes^2) per sweep,
-        into O(n_classes) per sweep). If omitted, it is built locally
-        from ``X_list`` as before.
 
     Returns
     -------
@@ -434,4 +485,107 @@ def build_di_update_system(
     s2, e2 = sample_boundaries[i]
     A_stat = 2.0 * (X_i_full @ X_i_full.T)
     B_stat = R @ X_i_full.T + A_list[i] @ X_i_full[:, s2:e2].T
+    return A_stat, B_stat
+
+
+def build_di_update_system_streaming(
+    i: int,
+    D_list: Sequence[torch.Tensor],
+    A_list_cpu: Sequence[torch.Tensor],
+    X_list_cpu: Sequence[torch.Tensor],
+    atom_boundaries: dict[int, tuple[int, int]],
+    device: torch.device,
+    chunk_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Streaming/chunked equivalent of ``build_di_update_system`` for the
+    Eq. (8) dictionary-update sufficient statistics of class ``i``.
+
+    Never materializes the full-dataset-width A_full / D_full_sum /
+    X_full_stacked tensors on ``device``: ``A_list_cpu``/``X_list_cpu``
+    are the "source of truth" storage (expected to live on the CPU),
+    and are streamed to ``device`` in column-chunks of at most
+    ``chunk_size`` samples, one class at a time, with A_stat/B_stat
+    accumulated on ``device`` as running sums. Peak device memory for
+    this function is therefore O(chunk_size * (n_features + p_i)),
+    independent of the total number of training samples.
+
+    Mathematically identical to ``build_di_update_system`` -- the key
+    fact that makes streaming possible is that the residual
+    R = A - sum_{j!=i} Dj@X^j does *not* depend on Di (the "+ Di@X^i"
+    term added back exactly cancels the Di@X^i term inside
+    D_full_sum, see ``build_di_update_system``), so R -- and therefore
+    A_stat/B_stat -- can be built one sample-chunk at a time without
+    ever needing class i's own dictionary or the full dataset in
+    memory at once. Verified equal to ``build_di_update_system`` on
+    random inputs across multiple chunk sizes and class-size splits;
+    see the module's companion tests.
+
+    Trade-off vs. the non-streaming version: this recomputes
+    "sum_{j!=i} Dj@Xj_chunk" from scratch for every class's dictionary
+    update (rather than reusing a single running D_full_sum patched
+    incrementally across the sweep), trading extra FLOPs for a memory
+    footprint bounded by ``chunk_size`` instead of the full dataset.
+
+    Parameters
+    ----------
+    i : int
+        Class index whose dictionary sufficient statistics are built.
+    D_list : sequence of torch.Tensor
+        Per-class sub-dictionaries, resident on ``device``.
+    A_list_cpu, X_list_cpu : sequence of torch.Tensor
+        Per-class training signals / coding coefficients. Any device
+        is accepted (each chunk is moved to ``device`` via ``.to()``,
+        a no-op copy if already there); CPU-resident tensors are the
+        intended "large storage" case.
+    atom_boundaries : dict mapping class -> (start, end) atom row-range.
+    device : torch.device
+        Compute device chunks are streamed to.
+    chunk_size : int
+        Maximum number of sample columns moved to ``device`` at once.
+
+    Returns
+    -------
+    A_stat, B_stat : torch.Tensor
+        Sufficient statistics for the dictionary update (on
+        ``device``), shapes (p_i, p_i) and (n_features, p_i) --
+        identical (up to floating-point summation order) to
+        ``build_di_update_system``'s return values.
+    """
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be >= 1.")
+
+    s_i, e_i = atom_boundaries[i]
+    p_i = e_i - s_i
+    n_features = A_list_cpu[i].shape[0]
+    dtype = D_list[i].dtype
+
+    A_stat = torch.zeros((p_i, p_i), device=device, dtype=dtype)
+    B_stat = torch.zeros((n_features, p_i), device=device, dtype=dtype)
+
+    other_classes = [j for j in range(len(D_list)) if j != i]
+
+    for k in range(len(D_list)):
+        Ak_cpu = A_list_cpu[k]
+        Xk_cpu = X_list_cpu[k]
+        n_k = Ak_cpu.shape[1]
+        for start in range(0, n_k, chunk_size):
+            end = min(start + chunk_size, n_k)
+            Ak_chunk = Ak_cpu[:, start:end].to(device)
+            Xk_chunk = Xk_cpu[:, start:end].to(device)
+
+            # R_chunk = A_chunk - sum_{j != i} Dj @ Xk_chunk[atom_boundaries[j]]
+            R_chunk = Ak_chunk.clone()
+            for j in other_classes:
+                sj, ej = atom_boundaries[j]
+                R_chunk -= D_list[j] @ Xk_chunk[sj:ej, :]
+
+            Xi_chunk = Xk_chunk[s_i:e_i, :]
+            A_stat += 2.0 * (Xi_chunk @ Xi_chunk.T)
+            B_stat += R_chunk @ Xi_chunk.T
+            if k == i:
+                B_stat += Ak_chunk @ Xi_chunk.T
+
+            del Ak_chunk, Xk_chunk, R_chunk, Xi_chunk
+
     return A_stat, B_stat

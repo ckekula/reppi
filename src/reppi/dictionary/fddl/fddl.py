@@ -35,16 +35,43 @@ from the typeset Eq. 7/8/Appendix A; see the module docstring of
 ``reppi.dictionary.fddl.utils`` for the derivation and its
 finite-difference / direct-computation verification.
 
-Backend
--------
-GPU-only: ``fit`` requires a CUDA or MPS device and raises otherwise
-(no silent CPU fallback). ``X``/``y``/``D_init`` are accepted as numpy
-arrays (the public API surface); internally everything is moved to the
-GPU once and the full alternating-optimization loop runs there as
-torch tensors. Checkpoints are still written as numpy .npz (so they're
-portable/inspectable without torch), and the fitted attributes
-(``D_``, ``D_list_``, ``X_list_``) are converted back to numpy at the
-end of ``fit`` — downstream consumers are not assumed to be GPU-aware.
+Backend / memory model
+-----------------------
+GPU-only for compute: ``fit`` requires a CUDA or MPS device and raises
+otherwise (no silent CPU fallback).
+
+Training data and coding coefficients (``A_list``/``X_list``, one
+tensor per class) are the dominant memory cost for large problems --
+e.g. many total atoms x many total samples -- and are kept resident on
+the **CPU** as the "source of truth" storage, not the GPU. Each phase
+of the outer loop streams only the slice of that storage it currently
+needs to the GPU, in bounded-size chunks, and moves results back:
+
+  * Step 2 (Eq. 7, coding): one class's Ai/Xi at a time.
+  * Step 3 (Eq. 8, dictionary): ``build_di_update_system_streaming``
+    streams every class's data in ``dict_update_chunk_size``-sized
+    column chunks to accumulate the Eq.(8) sufficient statistics,
+    never materializing a full-dataset-width tensor on the GPU.
+  * Objective (Eq. 6) computation for logging/convergence: same
+    per-class streaming as Step 2 for the fidelity term;
+    ``global_fisher_value`` runs directly on the CPU-resident X_list
+    (a handful of reductions, not a per-iteration hot path).
+
+Only the dictionaries (``D_list``/``D_full``, small: n_features x
+n_atoms) stay permanently GPU-resident. This bounds peak GPU memory by
+roughly (largest single class's Ai/Xi + its FISTA gradient
+temporaries) for Step 2, and by ``dict_update_chunk_size`` for Step 3
+-- both independent of total dataset size -- rather than requiring the
+whole dataset to fit on the GPU at once.
+
+Set ``pin_memory=False`` if the CPU-resident tensors' pinned-memory
+footprint (same total size as the data itself) is itself a concern;
+pinning only speeds up host<->device transfers, it isn't required for
+correctness.
+
+Checkpoints are written as numpy .npz, and the fitted attributes
+(``D_``, ``D_list_``, ``X_list_``) are converted back to numpy at
+the end of ``fit``.
 
 Usage
 -----
@@ -52,6 +79,7 @@ Usage
         n_components=8 * n_classes,   # e.g. 8 atoms/class, per Sec. 6.2
         lambda1=0.005, lambda2=0.005,
         classifier="gc", gamma=0.001, w=0.05,
+        dict_update_chunk_size=8192,  # tune down if Step 3 still OOMs
     )
     model.fit(X_train, y_train)
 """
@@ -72,7 +100,7 @@ from reppi.dictionary.fddl.coding import solve_class_codes
 from reppi.dictionary.fddl.utils import (
     GlobalMeanTracker,
     block_boundaries,
-    build_di_update_system,
+    build_di_update_system_streaming,
     fidelity_value,
     global_fisher_value,
     resolve_atoms_per_class,
@@ -98,6 +126,15 @@ def _require_gpu_device() -> torch.device:
 def _to_device(arr, device: torch.device) -> torch.Tensor:
     """Convert a numpy array (or array-like) to a float32 tensor on `device`."""
     return torch.as_tensor(np.asarray(arr, dtype=np.float32), device=device)
+
+
+def _to_cpu_storage(arr, pin_memory: bool) -> torch.Tensor:
+    """Convert a numpy array (or array-like) to a float32 CPU tensor, used
+    as the resident storage for A_list/X_list under the CPU-offload model."""
+    t = torch.as_tensor(np.asarray(arr, dtype=np.float32)).clone()
+    if pin_memory:
+        t = t.pin_memory()
+    return t
 
 
 class FDDL():
@@ -129,6 +166,16 @@ class FDDL():
     coding_max_iter, coding_tol : controls for the Eq. (7) solve.
     dict_max_iter, dict_tol : controls for the Eq. (8) BCD atom update
         (passed through to ``bcd_dictionary_update``).
+    dict_update_chunk_size : int
+        Maximum number of sample columns streamed to the GPU at once
+        while accumulating the Eq. (8) sufficient statistics (Step 3).
+        Bounds Step 3's peak GPU memory independent of dataset size;
+        lower it if Step 3 itself OOMs (see ``build_di_update_system_streaming``).
+    pin_memory : bool
+        Whether the CPU-resident training data / coefficients
+        (``A_list``/``X_list``) are allocated as pinned memory, for
+        faster host<->device transfers. Set False to save that memory
+        overhead if transfer speed isn't a concern.
     random_state : int or None
     verbose : bool
 
@@ -168,6 +215,8 @@ class FDDL():
         coding_tol: float | None = 1e-6,
         dict_max_iter: int = 1,
         dict_tol: float = 1e-6,
+        dict_update_chunk_size: int = 8192,
+        pin_memory: bool = True,
         random_state: int | None = None,
         verbose: bool = False,
     ) -> None:
@@ -175,6 +224,8 @@ class FDDL():
             raise ValueError("lambda1 and lambda2 must be >= 0.")
         if eta <= 0:
             raise ValueError("eta must be > 0.")
+        if dict_update_chunk_size < 1:
+            raise ValueError("dict_update_chunk_size must be >= 1.")
 
         self.n_components = n_components
         self.lambda1 = lambda1
@@ -186,6 +237,8 @@ class FDDL():
         self.coding_tol = coding_tol
         self.dict_max_iter = dict_max_iter
         self.dict_tol = dict_tol
+        self.dict_update_chunk_size = dict_update_chunk_size
+        self.pin_memory = pin_memory
         self.random_state = random_state
         self.verbose = verbose
 
@@ -257,14 +310,16 @@ class FDDL():
             )
         sample_boundaries = block_boundaries(sizes)
 
-        # Move the training signals to the GPU once
-        X_t = torch.as_tensor(X, device=device)
-        sample_order_t = torch.as_tensor(sample_order, dtype=torch.long, device=device)
+        # A_list / X_list are the CPU-resident "source of truth" storage
+        # (see module docstring): the compute loop below streams only
+        # the slice it currently needs to `device`, so this is the only
+        # place the full dataset is copied at once, and it stays on CPU.
+        X_grouped = X[:, sample_order]
         A_list = [
-            X_t[:, sample_order_t[s:e]]
-            for s, e in (sample_boundaries[i] for i in range(n_classes))
+            _to_cpu_storage(X_grouped[:, s:e], self.pin_memory)
+            for _, (s, e) in sample_boundaries.items()
         ]
-        A_full = torch.hstack(A_list)
+        del X_grouped
 
         atoms_per_class = resolve_atoms_per_class(self.n_components, n_classes)
         atom_boundaries = block_boundaries(atoms_per_class)
@@ -285,9 +340,11 @@ class FDDL():
                 D_list, X_list, self.objective_history_, start_iter = self._load_checkpoint(
                     checkpoint_path, n_classes
                 )
-                # Checkpoints are numpy on disk; move the resumed state to GPU.
+                # Checkpoints are numpy on disk. Dictionaries move to the
+                # GPU (small, live there for the whole optimization);
+                # coefficients stay on the CPU as resident storage.
                 D_list = [_to_device(Di, device) for Di in D_list]
-                X_list = [_to_device(Xi, device) for Xi in X_list]
+                X_list = [_to_cpu_storage(Xi, self.pin_memory) for Xi in X_list]
                 if self.verbose:
                     print(
                         f"Resuming from checkpoint at outer iteration "
@@ -311,7 +368,9 @@ class FDDL():
                     for p in atoms_per_class
                 ]
             X_list = [
-                torch.zeros((n_atoms, sizes[i]), dtype=torch.float32, device=device)
+                _to_cpu_storage(
+                    np.zeros((n_atoms, sizes[i]), dtype=np.float32), self.pin_memory
+                )
                 for i in range(n_classes)
             ]
 
@@ -319,16 +378,22 @@ class FDDL():
 
         for it in range(start_iter, self.n_iter):
             # ---- Step 2 (Eq. 7): update X class-by-class, D fixed ----
-            tracker = GlobalMeanTracker(X_list, sizes)
+            # Coefficient means are tiny (one n_atoms-length vector per
+            # class); kept GPU-resident throughout the sweep so they match
+            # the device of each class's Xi while it's being solved there,
+            # even though X_list itself lives on the CPU.
+            tracker = GlobalMeanTracker(X_list, sizes, device=device)
             for i in range(n_classes):
                 logger.info(f"Updating class {i} codes")
                 stats = tracker.exclude(i)
+                Ai_gpu = A_list[i].to(device)
+                Xi0_gpu = X_list[i].to(device)
                 Xi_new, _, _ = solve_class_codes(
-                    X_list[i],
+                    Xi0_gpu,
                     i,
                     D_list,
                     D_full,
-                    A_list[i],
+                    Ai_gpu,
                     atom_boundaries,
                     stats,
                     self.lambda1,
@@ -337,47 +402,48 @@ class FDDL():
                     max_iter=self.coding_max_iter,
                     tol=self.coding_tol,
                 )
-                X_list[i] = Xi_new
                 tracker.update(i, Xi_new)
+                X_list[i] = _to_cpu_storage(Xi_new.detach().cpu().numpy(), self.pin_memory)
+                del Ai_gpu, Xi0_gpu, Xi_new
 
             # ---- Step 3 (Eq. 8): update D class-by-class, X fixed ----
-            X_full_stacked = torch.hstack(X_list)
-
-            def row_block(k: int) -> torch.Tensor:
-                s, e = atom_boundaries[k]
-                return X_full_stacked[s:e, :]
-
-            D_full_sum = sum(Dj @ row_block(j) for j, Dj in enumerate(D_list))
-
+            # Sufficient statistics are streamed in `dict_update_chunk_size`
+            # column chunks (see build_di_update_system_streaming) instead
+            # of materializing a full-dataset-width tensor on the GPU.
             for i in range(n_classes):
                 logger.info(f"Updating class {i} dictionary")
-                A_stat, B_stat = build_di_update_system(
-                    i, D_list[i], D_full_sum, A_list, atom_boundaries,
-                    X_full_stacked=X_full_stacked, A_full=A_full, sample_boundaries=sample_boundaries,
+                A_stat, B_stat = build_di_update_system_streaming(
+                    i,
+                    D_list,
+                    A_list,
+                    X_list,
+                    atom_boundaries,
+                    device,
+                    self.dict_update_chunk_size,
                 )
                 # bcd_dictionary_update mutates its D argument in place
                 # and returns that same tensor object.
-                old_contrib = D_list[i] @ row_block(i)
                 Di_updated = bcd_dictionary_update(
                     D_list[i], A_stat, B_stat, 0, self.dict_max_iter, self.dict_tol
                 )
                 del A_stat, B_stat
-                Di_new = normalize_columns(Di_updated)
-                del Di_updated
-
-                # Patch the running sum in place of a full O(n_classes) rebuild.
-                D_full_sum = D_full_sum + Di_new @ row_block(i) - old_contrib
-                D_list[i] = Di_new
+                D_list[i] = normalize_columns(Di_updated)
 
             D_full = torch.hstack(D_list)
 
             # ---- Objective (Eq. 6) for convergence tracking ----
+            # global_fisher_value runs directly on the CPU-resident
+            # X_list (see its docstring); the fidelity term is streamed
+            # per class, the same way Step 2 streams Ai/Xi.
             logger.info("Computing global fischer value")
             obj = self.lambda2 * global_fisher_value(X_list, self.eta)
             for i in range(n_classes):
                 logger.info(f"Computing fidelity value for class {i}")
-                obj += fidelity_value(X_list[i], i, D_list, A_list[i], atom_boundaries)
-                obj += self.lambda1 * float(torch.sum(torch.abs(X_list[i])))
+                Ai_gpu = A_list[i].to(device)
+                Xi_gpu = X_list[i].to(device)
+                obj += fidelity_value(Xi_gpu, i, D_list, Ai_gpu, atom_boundaries)
+                obj += self.lambda1 * float(torch.sum(torch.abs(Xi_gpu)))
+                del Ai_gpu, Xi_gpu
             self.objective_history_.append(obj)
 
             if self.verbose:
@@ -397,7 +463,7 @@ class FDDL():
 
         # Public attributes: converted back to numpy here.
         self.D_list_ = [Di.detach().cpu().numpy() for Di in D_list]
-        self.X_list_ = [Xi.detach().cpu().numpy() for Xi in X_list]
+        self.X_list_ = [Xi.detach().cpu().numpy() for Xi in X_list]  # already CPU
         self.atom_boundaries_ = atom_boundaries
         self.classes_ = classes
         self.sample_order_ = sample_order

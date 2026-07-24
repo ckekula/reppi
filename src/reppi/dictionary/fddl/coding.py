@@ -57,37 +57,40 @@ def solve_class_codes(
     """
     Solve Eq. (7) for one class's coefficients Xi, with D and all other
     classes' coefficients fixed.
-
+ 
     Parameters
     ----------
     Xi0 : torch.Tensor, shape (n_atoms, n_i)
         Warm-start iterate (typically the previous outer iteration's Xi).
+        Must be on the device the solve should run on -- callers doing
+        CPU-resident storage with GPU compute (see ``FDDL.fit``) are
+        responsible for moving it there first.
     i : int
         Class index being solved.
     D_list, D_full : per-class sub-dictionaries and their horizontal
         stack.
     Ai : torch.Tensor, shape (n_features, n_i)
-        Training signals of class i.
+        Training signals of class i. Same device requirement as Xi0.
     atom_boundaries : dict mapping class -> (start, end) atom row-range.
     other_stats : OtherClassStats
         Precomputed (size, mean) of every class j != i, from the
-        current X.
+        current X. Must live on the same device as Xi0/Ai.
     lambda1, lambda2, eta : Eq. (6)/(7) hyperparameters.
     max_iter, tol : solver stopping controls.
     L0, backtrack_eta : FISTA backtracking controls.
-
+ 
     Returns
     -------
     Xi : torch.Tensor
     n_iter : int
     objective_history : list of float
     """
-
+ 
     def grad_smooth(Xi: torch.Tensor) -> torch.Tensor:
-        return fidelity_grad(Xi, i, D_list, D_full, Ai, atom_boundaries) + lambda2 * coef_grad(
-            Xi, i, other_stats, eta
-        )
-
+        grad = fidelity_grad(Xi, i, D_list, D_full, Ai, atom_boundaries)
+        coef_grad(Xi, i, other_stats, eta, out=grad, scale=lambda2)
+        return grad
+ 
     def f(Xi: torch.Tensor) -> float:
         return fidelity_value(Xi, i, D_list, Ai, atom_boundaries) + lambda2 * coef_value(
             Xi, i, other_stats, eta
@@ -98,7 +101,7 @@ def solve_class_codes(
  
     def prox_g(V: torch.Tensor, t: float) -> torch.Tensor:
         return soft_threshold(V, lambda1 * t)
-
+ 
     result = fista_core(
         grad_f=grad_smooth,
         prox_g=prox_g,
@@ -113,3 +116,4 @@ def solve_class_codes(
         tol=tol,
     )
     return result.x, result.n_iter, result.objective_history
+ 
