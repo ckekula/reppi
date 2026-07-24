@@ -31,6 +31,19 @@ rather than parsed from Eq. 7/8/Appendix A as typeset, since:
     generalized least-squares fit for Di over two stacked column
     blocks of the full training set — see ``build_di_update_system``.
     Verified against the three-term form directly.
+  * ``fidelity_grad`` / ``coef_grad`` now reuse buffers instead of
+    building several full-size temporaries per call. ``coef_grad``
+    additionally accepts ``out``/``scale`` so callers (see
+    ``reppi.dictionary.fddl.coding.solve_class_codes``) can accumulate
+    directly into an existing gradient tensor rather than allocating a
+    second same-size tensor just to add it in.
+  * ``build_di_update_system_streaming``: a chunked/streamed
+    equivalent of ``build_di_update_system`` (kept below, unchanged,
+    for reference/tests) that never materializes a full-dataset-width
+    tensor on the compute device. Intended for callers that keep the
+    per-class training signals/coefficients (``A_list``/``X_list``) on
+    the CPU and stream them to the GPU in bounded-size chunks -- see
+    ``FDDL.fit``.
 
 Both are unit-tested against finite-difference / direct-computation
 checks; see the module's companion tests.
@@ -300,11 +313,17 @@ class GlobalMeanTracker:
     def update(self, i: int, Xi_new: torch.Tensor) -> None:
         """O(1) update after class i's coefficients have been re-solved.
 
-        ``Xi_new`` must live on the same device as ``self.means``.
+        ``Xi_new`` may live on any device (e.g. CPU, for a class whose
+        solve was streamed rather than held whole on the GPU) -- the
+        resulting mean is moved to match ``self.means``'s device before
+        use, so the tracker itself always stays consistent regardless
+        of where each class's coefficients happen to be stored.
         """
         s = self.sizes[i]
         old_mean = self.means[i]
         new_mean = Xi_new.mean(dim=1)
+        if new_mean.device != old_mean.device:
+            new_mean = new_mean.to(old_mean.device)
         self.weighted_mean_sum += s * (new_mean - old_mean)
         self.weighted_sq_norm_sum += s * (
             float(torch.sum(new_mean ** 2)) - float(torch.sum(old_mean ** 2))
@@ -404,6 +423,148 @@ def coef_grad(
         return result
     out.add_(result, alpha=scale)
     return out
+
+
+def streaming_column_stats(
+    Xi_cpu: torch.Tensor, device: torch.device, chunk_size: int
+) -> tuple[torch.Tensor, float]:
+    """
+    Compute (column-mean, sum-of-squares) of a possibly CPU-resident
+    ``(n_atoms, ni)`` tensor by streaming column-chunks through
+    ``device`` -- the only reduction ``coef_grad_affine``/
+    ``coef_value_from_stats`` need over the *current* FISTA iterate
+    (which, unlike the per-outer-iteration class mean tracked by
+    ``GlobalMeanTracker``, changes every FISTA step and so cannot be
+    cached across calls).
+
+    Returns
+    -------
+    mi : torch.Tensor, shape (n_atoms,), on ``device``
+    sq_sum : float
+        sum(Xi ** 2) over every element.
+    """
+    ni = Xi_cpu.shape[1]
+    col_sum = torch.zeros(Xi_cpu.shape[0], device=device, dtype=Xi_cpu.dtype)
+    sq_sum = 0.0
+    for start in range(0, ni, chunk_size):
+        end = min(start + chunk_size, ni)
+        chunk = Xi_cpu[:, start:end].to(device)
+        col_sum += chunk.sum(dim=1)
+        sq_sum += float(torch.sum(chunk ** 2))
+        del chunk
+    mi = col_sum / ni
+    return mi, sq_sum
+
+
+def coef_grad_affine(
+    mi: torch.Tensor, ni: int, stats: OtherClassStats, eta: float
+) -> tuple[float, torch.Tensor, torch.Tensor]:
+    """
+    Closed-form ``(scale, offset, m)`` such that, for *every* column j
+    of Xi, ``coef_grad(Xi)[:, j] == scale * Xi[:, j] - offset``.
+
+    Why this is possible: in the unchunked ``coef_grad``, both ``a``
+    (length ``ni``, value ``1/n`` everywhere) and ``v`` (length ``ni``,
+    value ``1/ni - 1/n`` everywhere) are *uniform* vectors -- every
+    entry is the same constant. Consequently every column of
+    ``outer(mi - m, v)`` and ``outer(other_sum, a)`` is identical
+    (outer product against a constant vector just repeats the first
+    argument, scaled). So ``between_grad`` -- normally the part of the
+    gradient that looks like it needs the whole matrix -- is actually
+    the *same* vector broadcast to every column. That leaves the
+    gradient affine and fully column-separable, needing only ``mi``
+    (and the handful of scalar/vector quantities derived from it, all
+    ``O(n_atoms)``) rather than the full ``Xi``.
+
+    Verified equal to ``coef_grad`` on random inputs; see the module's
+    companion tests.
+
+    Returns
+    -------
+    scale : float
+    offset : torch.Tensor, shape (n_atoms,)
+    m : torch.Tensor, shape (n_atoms,)
+        Returned so callers needing ``coef_value_from_stats`` too (e.g.
+        the ``f`` closure in ``solve_class_codes_chunked``) don't have
+        to recompute it.
+    """
+    n = stats.n_total + ni
+    v0 = 1.0 / ni - 1.0 / n
+    c0 = 0.0 if stats.weighted_mean_sum is None else stats.weighted_mean_sum / n
+    m = (ni / n) * mi + c0
+
+    beta = (2.0 * ni * v0) * (mi - m)
+    if stats.weighted_mean_sum is not None:
+        other_sum = stats.weighted_mean_sum - stats.n_total * m
+        beta = beta - (2.0 / n) * other_sum
+
+    scale = 2.0 + 2.0 * eta
+    offset = 2.0 * mi + beta
+    return scale, offset, m
+
+
+def coef_value_from_stats(
+    mi: torch.Tensor,
+    sq_sum: float,
+    ni: int,
+    stats: OtherClassStats,
+    eta: float,
+    m: torch.Tensor | None = None,
+) -> float:
+    """
+    fi(Xi) (Eq. 5, restricted to Xi) computed purely from the
+    precomputed mean (``mi``) and sum-of-squares (``sq_sum``) of Xi --
+    see ``coef_grad_affine``'s docstring for why the value, like the
+    gradient, doesn't actually need Xi itself once those are known
+    (``within`` reduces to ``sq_sum - ni*||mi||^2`` via
+    ``sum_j||x_j-mi||^2 = sum_j||x_j||^2 - 2*ni*||mi||^2 + ni*||mi||^2``,
+    and the regularizer is exactly ``eta*sq_sum``).
+
+    Pass ``m`` (as returned by ``coef_grad_affine``) to avoid
+    recomputing it. Verified equal to ``coef_value`` on random inputs;
+    see the module's companion tests.
+    """
+    n = stats.n_total + ni
+    c0 = 0.0 if stats.weighted_mean_sum is None else stats.weighted_mean_sum / n
+    if m is None:
+        m = (ni / n) * mi + c0
+
+    within = sq_sum - ni * float(mi @ mi)
+    between = ni * float((mi - m) @ (mi - m))
+    if stats.weighted_mean_sum is not None:
+        between += (
+            stats.weighted_sq_norm_sum
+            - 2.0 * float(m @ stats.weighted_mean_sum)
+            + stats.n_total * float(m @ m)
+        )
+    return within - between + eta * sq_sum
+
+
+def fidelity_value_chunked(
+    Xi_cpu: torch.Tensor,
+    i: int,
+    D_list: Sequence[torch.Tensor],
+    Ai_cpu: torch.Tensor,
+    atom_boundaries: dict[int, tuple[int, int]],
+    device: torch.device,
+    chunk_size: int,
+) -> float:
+    """
+    Streamed equivalent of ``fidelity_value`` for a possibly
+    CPU-resident class. r(Ai, D, Xi) (Eq. 4) is a sum of per-sample
+    (per-column) terms with no cross-column coupling, so it is exactly
+    additive over column-chunks -- this simply calls the existing,
+    already-verified ``fidelity_value`` once per chunk and sums.
+    """
+    ni = Xi_cpu.shape[1]
+    total = 0.0
+    for start in range(0, ni, chunk_size):
+        end = min(start + chunk_size, ni)
+        Xi_chunk = Xi_cpu[:, start:end].to(device)
+        Ai_chunk = Ai_cpu[:, start:end].to(device)
+        total += fidelity_value(Xi_chunk, i, D_list, Ai_chunk, atom_boundaries)
+        del Xi_chunk, Ai_chunk
+    return total
 
 
 def global_fisher_value(X_list: Sequence[torch.Tensor], eta: float) -> float:

@@ -47,31 +47,48 @@ the **CPU** as the "source of truth" storage, not the GPU. Each phase
 of the outer loop streams only the slice of that storage it currently
 needs to the GPU, in bounded-size chunks, and moves results back:
 
-  * Step 2 (Eq. 7, coding): one class's Ai/Xi at a time.
+  * Step 2 (Eq. 7, coding): ``solve_class_codes_chunked`` solves each
+    class's Eq. (7) FISTA problem with the iterate itself CPU-resident,
+    streaming ``coding_chunk_size``-sized column chunks to the GPU for
+    the actual gradient/objective evaluations. A class's own coding
+    solve is the single most memory-hungry step in this whole loop
+    (Xi alone is n_atoms_total x n_i, and FISTA/gradient math needs
+    several such buffers alive at once) -- this is what actually bounds
+    peak GPU memory independent of class size, not just "one class at
+    a time" (which alone is not enough once a single large class's
+    working set approaches the device's capacity).
   * Step 3 (Eq. 8, dictionary): ``build_di_update_system_streaming``
     streams every class's data in ``dict_update_chunk_size``-sized
     column chunks to accumulate the Eq.(8) sufficient statistics,
     never materializing a full-dataset-width tensor on the GPU.
-  * Objective (Eq. 6) computation for logging/convergence: same
-    per-class streaming as Step 2 for the fidelity term;
-    ``global_fisher_value`` runs directly on the CPU-resident X_list
-    (a handful of reductions, not a per-iteration hot path).
+  * Objective (Eq. 6) computation for logging/convergence:
+    ``fidelity_value_chunked`` streams the fidelity term the same way
+    as Step 3; the L1 term and ``global_fisher_value`` run directly on
+    the CPU-resident X_list (plain reductions, not a per-iteration hot
+    path, no GPU needed at all for these).
 
 Only the dictionaries (``D_list``/``D_full``, small: n_features x
 n_atoms) stay permanently GPU-resident. This bounds peak GPU memory by
-roughly (largest single class's Ai/Xi + its FISTA gradient
-temporaries) for Step 2, and by ``dict_update_chunk_size`` for Step 3
--- both independent of total dataset size -- rather than requiring the
-whole dataset to fit on the GPU at once.
+``coding_chunk_size`` for Step 2 and by ``dict_update_chunk_size`` for
+Step 3 -- both independent of class/dataset size -- rather than
+requiring even a single class's full coefficient matrix to fit on the
+GPU at once. The trade-off is extra compute: Step 2 in particular now
+makes several passes over a class's data per FISTA iteration (one
+reduction pass for the Fisher term's mean, one pass for the gradient,
+plus more during backtracking line search) instead of one fused
+GPU-resident computation, so this is deliberately "memory-safe first",
+not the fastest possible path for classes that would fit whole on the
+GPU.
 
 Set ``pin_memory=False`` if the CPU-resident tensors' pinned-memory
 footprint (same total size as the data itself) is itself a concern;
 pinning only speeds up host<->device transfers, it isn't required for
 correctness.
 
-Checkpoints are written as numpy .npz, and the fitted attributes
-(``D_``, ``D_list_``, ``X_list_``) are converted back to numpy at
-the end of ``fit``.
+Checkpoints are still written as numpy .npz (so they're portable /
+inspectable without torch), and the fitted attributes (``D_``,
+``D_list_``, ``X_list_``) are converted back to numpy at the end of
+``fit``.
 
 Usage
 -----
@@ -80,6 +97,7 @@ Usage
         lambda1=0.005, lambda2=0.005,
         classifier="gc", gamma=0.001, w=0.05,
         dict_update_chunk_size=8192,  # tune down if Step 3 still OOMs
+        coding_chunk_size=8192,       # tune down if Step 2 still OOMs
     )
     model.fit(X_train, y_train)
 """
@@ -96,12 +114,12 @@ from reppi.dictionary.bcd.utils import bcd_dictionary_update
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.utils import _check_dict_normalized, normalize_columns
 
-from reppi.dictionary.fddl.coding import solve_class_codes
+from reppi.dictionary.fddl.coding import solve_class_codes_chunked
 from reppi.dictionary.fddl.utils import (
     GlobalMeanTracker,
     block_boundaries,
     build_di_update_system_streaming,
-    fidelity_value,
+    fidelity_value_chunked,
     global_fisher_value,
     resolve_atoms_per_class,
 )
@@ -186,6 +204,14 @@ class FDDL():
     coding_max_iter, coding_tol : controls for the Eq. (7) solve.
     dict_max_iter, dict_tol : controls for the Eq. (8) BCD atom update
         (passed through to ``bcd_dictionary_update``).
+    coding_chunk_size : int
+        Maximum number of sample columns streamed to the GPU at once
+        while solving each class's Eq. (7) FISTA problem (Step 2).
+        Bounds Step 2's peak GPU memory independent of class size;
+        lower it if Step 2 itself OOMs (see ``solve_class_codes_chunked``).
+        This is typically the step that needs the smallest chunk size,
+        since it needs several full-chunk-size buffers alive at once
+        (FISTA's own iterate bookkeeping plus gradient temporaries).
     dict_update_chunk_size : int
         Maximum number of sample columns streamed to the GPU at once
         while accumulating the Eq. (8) sufficient statistics (Step 3).
@@ -235,6 +261,7 @@ class FDDL():
         coding_tol: float | None = 1e-6,
         dict_max_iter: int = 1,
         dict_tol: float = 1e-6,
+        coding_chunk_size: int = 8192,
         dict_update_chunk_size: int = 8192,
         pin_memory: bool = True,
         random_state: int | None = None,
@@ -244,6 +271,8 @@ class FDDL():
             raise ValueError("lambda1 and lambda2 must be >= 0.")
         if eta <= 0:
             raise ValueError("eta must be > 0.")
+        if coding_chunk_size < 1:
+            raise ValueError("coding_chunk_size must be >= 1.")
         if dict_update_chunk_size < 1:
             raise ValueError("dict_update_chunk_size must be >= 1.")
 
@@ -257,6 +286,7 @@ class FDDL():
         self.coding_tol = coding_tol
         self.dict_max_iter = dict_max_iter
         self.dict_tol = dict_tol
+        self.coding_chunk_size = coding_chunk_size
         self.dict_update_chunk_size = dict_update_chunk_size
         self.pin_memory = pin_memory
         self.random_state = random_state
@@ -406,25 +436,28 @@ class FDDL():
             for i in range(n_classes):
                 logger.info(f"Updating class {i} codes")
                 stats = tracker.exclude(i)
-                Ai_gpu = A_list[i].to(device)
-                Xi0_gpu = X_list[i].to(device)
-                Xi_new, _, _ = solve_class_codes(
-                    Xi0_gpu,
+                # Xi0/Ai stay CPU-resident throughout -- solve_class_codes_chunked
+                # streams `coding_chunk_size`-sized column chunks to `device`
+                # internally; no full-class GPU tensor is ever created here.
+                Xi_new_cpu, _, _ = solve_class_codes_chunked(
+                    X_list[i],
                     i,
                     D_list,
                     D_full,
-                    Ai_gpu,
+                    A_list[i],
                     atom_boundaries,
                     stats,
                     self.lambda1,
                     self.lambda2,
                     self.eta,
+                    device,
+                    self.coding_chunk_size,
                     max_iter=self.coding_max_iter,
                     tol=self.coding_tol,
                 )
-                tracker.update(i, Xi_new)
-                X_list[i] = _to_cpu_storage(Xi_new.detach().cpu().numpy(), self.pin_memory)
-                del Ai_gpu, Xi0_gpu, Xi_new
+                tracker.update(i, Xi_new_cpu)  # mean computed on CPU, moved to device internally
+                X_list[i] = _to_cpu_storage(Xi_new_cpu.numpy(), self.pin_memory)
+                del Xi_new_cpu
                 _empty_cache(device)
 
             # ---- Step 3 (Eq. 8): update D class-by-class, X fixed ----
@@ -454,18 +487,20 @@ class FDDL():
             D_full = torch.hstack(D_list)
 
             # ---- Objective (Eq. 6) for convergence tracking ----
-            # global_fisher_value runs directly on the CPU-resident
-            # X_list (see its docstring); the fidelity term is streamed
-            # per class, the same way Step 2 streams Ai/Xi.
+            # global_fisher_value and the L1 term run directly on the
+            # CPU-resident X_list -- both are plain reductions with no
+            # matmuls, so there's no benefit to moving them to the GPU
+            # and every reason not to for a class this large. Only the
+            # fidelity term needs D (GPU-resident), so only it streams.
             logger.info("Computing global fischer value")
             obj = self.lambda2 * global_fisher_value(X_list, self.eta)
             for i in range(n_classes):
                 logger.info(f"Computing fidelity value for class {i}")
-                Ai_gpu = A_list[i].to(device)
-                Xi_gpu = X_list[i].to(device)
-                obj += fidelity_value(Xi_gpu, i, D_list, Ai_gpu, atom_boundaries)
-                obj += self.lambda1 * float(torch.sum(torch.abs(Xi_gpu)))
-                del Ai_gpu, Xi_gpu
+                obj += fidelity_value_chunked(
+                    X_list[i], i, D_list, A_list[i], atom_boundaries,
+                    device, self.dict_update_chunk_size,
+                )
+                obj += self.lambda1 * float(torch.sum(torch.abs(X_list[i])))
                 _empty_cache(device)
             self.objective_history_.append(obj)
 
