@@ -18,4 +18,4 @@ from reppi.sparse import FISTA
 from reppi.dictionary import KSVD, LCKSVD, FrozenDictionaryLearner, IncrementalFrozenDictionary, FDDL
 
 __all__ = ["OMP", "FISTA", "KSVD", "LCKSVD", "FrozenDictionaryLearner", "IncrementalFrozenDictionary", "FDDL"]
-__version__ = "0.1.54"
+__version__ = "0.1.55"
