@@ -25,7 +25,7 @@ from typing import Optional
 import numpy as np
 
 from reppi.base import BaseSparseCoder
-from reppi.sparse.fista.core import fista
+from reppi.sparse.fista.core import fista_core
 from reppi.sparse.fista.utils import lipschitz_constant_lsq, soft_threshold
 from reppi.sparse.utils import _check_dict_normalized
 
@@ -74,7 +74,7 @@ class FISTA(BaseSparseCoder):
         alpha: float,
         mode: str = "backtracking",
         max_iter: int = 500,
-        tol: Optional[float] = 1e-8,
+        tol: float | None = 1e-8,
         L0: float = 1.0,
         eta: float = 2.0,
         track_objective: bool = False,
@@ -97,8 +97,8 @@ class FISTA(BaseSparseCoder):
         self,
         X: np.ndarray,
         D: np.ndarray,
-        L: Optional[float] = None,
-        x0: Optional[np.ndarray] = None,
+        L: float | None = None,
+        x0: np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Compute sparse codes for each column of X.
@@ -152,7 +152,7 @@ class FISTA(BaseSparseCoder):
             np.zeros((n_atoms, n_samples), dtype=np.float32) if x0 is None else np.asarray(x0, dtype=np.float32)
         )
 
-        result = fista(
+        result = fista_core(
             grad_f=grad_f,
             prox_g=prox_g,
             x0=gamma0,

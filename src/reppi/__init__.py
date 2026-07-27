@@ -13,9 +13,14 @@ dictionary
     Dictionary learning (K-SVD, LC-KSVD1, LC-KSVD2).
 """
 
-from reppi.sparse import OMP
-from reppi.sparse import FISTA
-from reppi.dictionary import KSVD, LCKSVD, FrozenDictionaryLearner, IncrementalFrozenDictionary, FDDL
+from reppi.dictionary import (
+    FDDL,
+    KSVD,
+    LCKSVD,
+    FrozenDictionaryLearner,
+    IncrementalFrozenDictionary,
+)
+from reppi.sparse import FISTA, OMP, fista_core
 
-__all__ = ["OMP", "FISTA", "KSVD", "LCKSVD", "FrozenDictionaryLearner", "IncrementalFrozenDictionary", "FDDL"]
-__version__ = "0.1.55"
+__all__ = ["FDDL", "FISTA", "KSVD", "LCKSVD", "OMP", "FrozenDictionaryLearner", "IncrementalFrozenDictionary", "fista_core"]
+__version__ = "0.1.56"

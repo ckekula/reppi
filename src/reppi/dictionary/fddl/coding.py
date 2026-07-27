@@ -28,12 +28,9 @@ avoiding the extra same-size allocation matters for large classes.
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import torch
-
-from reppi.sparse.fista.core import fista as fista_core
-from reppi.sparse.fista.utils import soft_threshold
 
 from reppi.dictionary.fddl.utils import (
     OtherClassStats,
@@ -45,6 +42,8 @@ from reppi.dictionary.fddl.utils import (
     fidelity_value,
     streaming_column_stats,
 )
+from reppi.sparse.fista.core import fista_core
+from reppi.sparse.fista.utils import soft_threshold
 
 
 def solve_class_codes(

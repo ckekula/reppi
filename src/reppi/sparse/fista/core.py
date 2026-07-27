@@ -33,11 +33,12 @@ device transfers other than the (unavoidable) scalar convergence check.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Union
+from typing import Union
 
 import numpy as np
-import logging
 
 try:
     import torch
@@ -62,7 +63,7 @@ class FISTAResult:
     n_iter: int
     converged: bool
     L: float
-    objective_history: List[float] = field(default_factory=list)
+    objective_history: list[float] = field(default_factory=list)
 
 
 def _is_torch_tensor(a: Array) -> bool:
@@ -117,18 +118,18 @@ def _p_L(y: Array, grad_f_y: Array, L: float, prox_g: ProxFunc) -> Array:
     return prox_g(y - grad_f_y / L, 1.0 / L)
 
 
-def fista(
+def fista_core(
     grad_f: ArrayFunc,
     prox_g: ProxFunc,
     x0: Array,
-    f: Optional[ScalarFunc] = None,
-    g: Optional[ScalarFunc] = None,
-    L: Optional[float] = None,
+    f: float | None = None,
+    g: float | None = None,
+    L: float | None = None,
     mode: str = "backtracking",
     L0: float = 1.0,
     eta: float = 2.0,
     max_iter: int = 500,
-    tol: Optional[float] = 1e-8,
+    tol: float | None = 1e-8,
     max_backtrack_iter: int = 100,
 ) -> FISTAResult:
     """
@@ -194,7 +195,7 @@ def fista(
     t = 1.0  # t_1 = 1
     Lk = float(L) if mode == "constant" else float(L0)
 
-    obj_history: List[float] = []
+    obj_history: list[float] = []
     converged = False
     n_iter = 0
     x_k = x_prev
@@ -202,8 +203,8 @@ def fista(
     for k in range(1, max_iter + 1):
         n_iter = k
         grad_y = grad_f(y)
-        f_xk: Optional[float] = None
-        g_xk: Optional[float] = None
+        f_xk: float | None = None
+        g_xk: float | None = None
 
         if mode == "constant":
             x_k = _p_L(y, grad_y, Lk, prox_g)

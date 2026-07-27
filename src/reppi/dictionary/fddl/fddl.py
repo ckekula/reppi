@@ -104,16 +104,13 @@ Usage
 
 from __future__ import annotations
 
+import logging
 import os
 
 import numpy as np
 import torch
-import logging
 
 from reppi.dictionary.bcd.utils import bcd_dictionary_update
-from reppi.exceptions import DictionaryLearningError
-from reppi.sparse.utils import _check_dict_normalized, normalize_columns
-
 from reppi.dictionary.fddl.coding import solve_class_codes_chunked
 from reppi.dictionary.fddl.utils import (
     GlobalMeanTracker,
@@ -123,6 +120,8 @@ from reppi.dictionary.fddl.utils import (
     global_fisher_value,
     resolve_atoms_per_class,
 )
+from reppi.exceptions import DictionaryLearningError
+from reppi.sparse.utils import _check_dict_normalized, normalize_columns
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +174,7 @@ def _empty_cache(device: torch.device) -> None:
         torch.mps.empty_cache()
 
 
-class FDDL():
+class FDDL:
     """
     Fisher Discrimination Dictionary Learning.
 
@@ -310,7 +309,7 @@ class FDDL():
         D_init: list[np.ndarray] | None = None,
         checkpoint_dir: str | None = None,
         resume: bool = True,
-    ) -> "FDDL":
+    ) -> FDDL:
         """
         Learn a Fisher discriminative dictionary.
 
