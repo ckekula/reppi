@@ -6,8 +6,8 @@ Utility functions for LC-KSVD.
 import numpy as np
 from scipy.linalg import cho_factor, cho_solve
 
-from reppi.sparse.omp.omp import OMP
 from reppi.dictionary.ksvd.ksvd import KSVD
+from reppi.sparse.omp.omp import OMP
 
 
 def _build_label_consistent_target(
@@ -36,7 +36,7 @@ def _build_label_consistent_target(
     -------
     Q : np.ndarray, shape (n_components, n_samples)
     """
-    n_classes, n_samples = H.shape
+    n_classes, _n_samples = H.shape
 
     # Distribute atoms evenly across classes
     atoms_per_class = n_components // n_classes

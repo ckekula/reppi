@@ -21,19 +21,22 @@ in:
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
-import logging
+
 import numpy as np
 from tqdm import tqdm
 
 from reppi.base import BaseDictionaryLearner
+from reppi.dictionary.ksvd.utils import _clear_dict, _optimize_atom
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP
-from reppi.sparse.utils import _check_dict_normalized
-from reppi.sparse.utils import col_norms_squared, normalize_columns
-
-from reppi.dictionary.ksvd.utils import _optimize_atom, _clear_dict
+from reppi.sparse.utils import (
+    _check_dict_normalized,
+    col_norms_squared,
+    normalize_columns,
+)
 
 _CHECKPOINT_FILENAME = "ksvd_checkpoint.npz"
 
@@ -126,7 +129,7 @@ class KSVD(BaseDictionaryLearner):
         D_frozen: np.ndarray | None = None,
         checkpoint_dir: str | None = None,
         resume: bool = True,
-    ) -> "KSVD":
+    ) -> KSVD:
         """
         Learn a dictionary from training signals.
 
@@ -297,7 +300,7 @@ class KSVD(BaseDictionaryLearner):
         concatenated afterward, never passed through this method (so they
         are never renormalised or otherwise touched at initialisation).
         """
-        n_features, n_samples = X.shape
+        n_features, _n_samples = X.shape
         k = self.n_components
 
         if D_init is not None:
@@ -386,14 +389,9 @@ class KSVD(BaseDictionaryLearner):
             dir=directory, prefix=".ksvd_checkpoint_", suffix=".npz.tmp"
         )
         try:
-            # Pass the open file descriptor itself (not the path string) to
-            # np.savez: given a string, np.savez silently appends '.npz' if
-            # the name doesn't already end with exactly that extension —
-            # since tmp_path ends in '.npz.tmp', that would write the real
-            # data to an orphaned "<tmp_path>.npz" file while leaving the
-            # empty file mkstemp created at tmp_path (and hence, after
-            # os.replace, at `path`) untouched. Writing through the fd
-            # avoids the extension-mangling entirely.
+            # Pass the open file descriptor to np.savez: given a string,
+            # np.savez silently appends '.npz' if
+            # the name doesn't already end with exactly that extension
             with os.fdopen(fd, "wb") as f:
                 np.savez(
                     f,

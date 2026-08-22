@@ -4,8 +4,9 @@ Utility functions for KSVD.
 """
 
 
-import numpy as np
 import logging
+
+import numpy as np
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ def _optimize_atom(
 
     if exact_svd:
         # Exact update via rank-1 SVD
-        U, s, Vt = np.linalg.svd(E, full_matrices=False)
+        U, _s, _Vt = np.linalg.svd(E, full_matrices=False)
         atom = U[:, 0]
         gamma_j = atom @ E  # (|support|,)
     else:

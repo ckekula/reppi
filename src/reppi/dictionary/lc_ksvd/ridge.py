@@ -1,5 +1,6 @@
 import numpy as np
 
+
 class RidgeClassifier:
     """
     Default LC-KSVD1 classifier: linear predictive classifier trained by

@@ -3,8 +3,9 @@ from __future__ import annotations
 import numpy as np
 
 from reppi.base import BaseDictionaryLearner
-from reppi.exceptions import DictionaryLearningError
 from reppi.dictionary.frozen.utils import _completed_ksvd_checkpoint
+from reppi.exceptions import DictionaryLearningError
+
 
 class FrozenDictionaryLearner:
     """
@@ -83,7 +84,7 @@ class FrozenDictionaryLearner:
         frozen_class_boundaries: dict[int, tuple[int, int]] | None = None,
         checkpoint_dir: str | None = None,
         resume: bool = True,
-    ) -> "FrozenDictionaryLearner":
+    ) -> FrozenDictionaryLearner:
         """
         Fit the residual dictionary on X.
 

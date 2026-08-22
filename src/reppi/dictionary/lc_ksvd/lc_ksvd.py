@@ -115,13 +115,12 @@ import numpy as np
 from tqdm import tqdm
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
+from reppi.dictionary.ksvd.ksvd import KSVD
+from reppi.dictionary.lc_ksvd.ridge import RidgeClassifier
+from reppi.dictionary.lc_ksvd.utils import _augment_data, initialization4lcksvd
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP
 from reppi.sparse.utils import normalize_columns, rep_error_squared
-from reppi.dictionary.ksvd.ksvd import KSVD
-
-from reppi.dictionary.lc_ksvd.utils import initialization4lcksvd, _augment_data
-from reppi.dictionary.lc_ksvd.ridge import RidgeClassifier
 
 _CHECKPOINT_FILENAME = "lc_ksvd_checkpoint.npz"
 
