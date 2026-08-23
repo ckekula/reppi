@@ -157,9 +157,8 @@ class KSVD(BaseDictionaryLearner):
             overwriting the previous one. The directory is created if it
             does not exist.
         resume : bool
-            If True (default) and a checkpoint is found in
-            ``checkpoint_dir``, training resumes from it. If False, any
-            existing checkpoint in ``checkpoint_dir`` is ignored and
+            If True (default) and a checkpoint is found, training resumes from it.
+            If False, any existing checkpoint in ``checkpoint_dir`` is ignored and
             overwritten.
 
         Returns
@@ -455,11 +454,6 @@ class KSVD(BaseDictionaryLearner):
                 raise DictionaryLearningError(
                     f"Checkpoint was created with n_iter={n_iter}, but this "
                     f"KSVD instance has n_iter={self.n_iter}."
-                )
-            if completed_iter >= self.n_iter:
-                raise DictionaryLearningError(
-                    f"Checkpoint at {path} already completed all "
-                    f"{self.n_iter} iterations; nothing to resume."
                 )
             if n_frozen_ckpt != n_frozen:
                 raise DictionaryLearningError(
