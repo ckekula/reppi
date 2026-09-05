@@ -24,11 +24,9 @@ def _optimize_atom(
     """
     Update the j-th dictionary atom and the corresponding sparse codes.
 
-    Mirrors the MATLAB ``optimize_atom`` function.
-
     ``j`` is an absolute column index into the (possibly frozen+active)
     dictionary ``D`` and into ``Gamma``'s rows. This function has no
-    frozen-atom awareness of its own — the caller is responsible for never
+    frozen-atom awareness of its own. The caller is responsible for never
     invoking it with ``j`` in the frozen range (see ``KSVD.fit``'s atom
     loop, which iterates ``range(n_frozen, n_total)``). ``replaced`` must
     therefore be sized to the *full* dictionary width so that
@@ -102,18 +100,16 @@ def _clear_dict(
     """
     Replace rarely-used or highly-correlated atoms with high-error signals.
 
-    Mirrors the MATLAB ``cleardict`` function.
-
     Parameters
     ----------
     frozen_atoms : int
         Number of leading columns of D to treat as frozen (never
         replaced), matching the same convention as ``KSVD.fit``'s atom
-        loop. Coherence (``Gj``) is still computed against the full D —
-        an active atom too correlated with a *frozen* atom is still
-        flagged and replaced — only the frozen columns themselves are
+        loop. Coherence (``Gj``) is still computed against the full D.
+        An active atom too correlated with a *frozen* atom is still
+        flagged and replaced. Only the frozen columns themselves are
         exempt from being overwritten. Default 0 preserves the original,
-        non-frozen behaviour exactly.
+        non-frozen behaviour.
 
     Returns
     -------

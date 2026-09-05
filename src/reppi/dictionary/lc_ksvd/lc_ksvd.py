@@ -1,54 +1,16 @@
 """
 Label Consistent K-SVD (LC-KSVD) dictionary learning.
 
-Implements LC-KSVD1 and LC-KSVD2 as described in:
-    Zhuolin Jiang, Zhe Lin, Larry S. Davis.
-    "Learning A Discriminative Dictionary for Sparse Coding via Label
-     Consistent K-SVD", CVPR 2011.
-
 LC-KSVD augments the standard K-SVD objective with:
   - A label-consistency term (LC-KSVD1) that encourages atoms associated
     with the same class to produce similar sparse codes.
   - An additional linear classifier term (LC-KSVD2) that jointly trains a
     classifier W alongside the dictionary.
 
-Optimization problems
----------------------
-LC-KSVD1:
-    min_{D, A, X}  ||Y - DX||_F^2 + alpha * ||Q - AX||_F^2
-    s.t.  ||x_i||_0 <= T
-
-LC-KSVD2:
-    min_{D, A, W, X}  ||Y - DX||_F^2 + alpha * ||Q - AX||_F^2
-                      + beta * ||H - WX||_F^2
-    s.t.  ||x_i||_0 <= T
-
-where:
-  Y = training signals
-  D = dictionary
-  X = sparse codes
-  Q = label-consistent sparse code targets (binary atom-class assignments)
-  A = linear mapping for Q-consistency
-  W = linear classifier
-  H = class label matrix (one-hot per column)
-  alpha, beta = trade-off weights (these are sqrt_alpha / sqrt_beta from
-      the paper's Eq. (11) — i.e. what you pass here is the value stacked
-      directly onto Q and H, NOT the paper's reported alpha/beta. To
-      reproduce a paper-reported setting such as alpha=4.0, beta=2.0
-      (extended YaleB / AR face, Sec. 6.1-6.2), pass
-      alpha=sqrt(4.0)=2.0, beta=sqrt(2.0)=~1.41 here.
-
 Implementation note
 --------------------
-Both variants reduce to running ordinary K-SVD on an augmented system:
-
-    Y_aug = [Y ; sqrt(alpha)*Q ; sqrt(beta)*H]     (rows stacked)
-    D_aug = [D ; sqrt(alpha)*A ; sqrt(beta)*W]
-
-Each outer iteration here delegates to `KSVD` (with n_iter=1) on the
-augmented system and then splits the result back into D, A, W. This
-mirrors the construction in the original paper and keeps a single
-source of truth for the K-SVD atom-update step.
+Both variants reduce to running ordinary K-SVD on an augmented system
+(with n_iter=1) and then splits the result back into D, A, W.
 
 Known limitation (fixed atom-class labels, Sec. 3.3.1 footnote 2)
 -------------------------------------------------------------------
@@ -66,56 +28,18 @@ increases how often the incoherence-triggered path fires; the
 dead-atom fallback triggers regardless of `mu_thresh` whenever an
 atom's row in Gamma is entirely zero, and is not user-configurable at
 the KSVD level. This is a structural limitation of composing the
-generic KSVD atom-update/clearing logic with LC-KSVD's assumption, not
-something LC-KSVD's own code can fully prevent without changes to
-KSVD's atom-clearing routines.
-
-Usage
------
-For LC-KSVD1, with the default ridge classifier::
-
-    model = LCKSVD(
-        n_components=570,
-        n_nonzero_coefs=30,
-        alpha=2.0,          # sqrt(4.0), matching the paper's alpha=4.0
-        variant="lcksvd1",
-    )
-    model.fit(X_train, H_train)
-    predictions = model.predict(X_test)
-
-For LC-KSVD1 with a custom classifier::
-
-    model = LCKSVD(
-        n_components=570,
-        n_nonzero_coefs=30,
-        alpha=2.0,
-        variant="lcksvd1",
-        classifier=MyClassifier(),   # any fit(Gamma, H) / predict(Gamma)
-    )
-    model.fit(X_train, H_train)
-
-For LC-KSVD2 (classifier is trained jointly; `classifier=` not accepted)::
-
-    model = LCKSVD(
-        n_components=570,
-        n_nonzero_coefs=30,
-        alpha=2.0,           # sqrt(4.0)
-        beta=1.4142,         # sqrt(2.0), matching the paper's beta=2.0
-        variant="lcksvd2",
-    )
-    model.fit(X_train, H_train)
-    predictions = model.predict(X_test)
+generic KSVD atom-update/clearing logic with LC-KSVD's assumption.
 """
 from __future__ import annotations
 
 import os
-import tempfile
 
 import numpy as np
 from tqdm import tqdm
 
 from reppi.base import BaseDiscriminativeDictionaryLearner
 from reppi.dictionary.ksvd.ksvd import KSVD
+from reppi.dictionary.lc_ksvd.checkpoint import load_checkpoint, save_checkpoint
 from reppi.dictionary.lc_ksvd.ridge import RidgeClassifier
 from reppi.dictionary.lc_ksvd.utils import _augment_data, initialization4lcksvd
 from reppi.exceptions import DictionaryLearningError
@@ -242,10 +166,6 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         self.errors_: list[float] = []
         self.class_boundaries_: dict[int, tuple[int, int]] | None = None
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def fit(
         self,
         X: np.ndarray,
@@ -256,7 +176,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         Q: np.ndarray | None = None,
         checkpoint_dir: str | None = None,
         resume: bool = True,
-    ) -> "LCKSVD":
+    ) -> LCKSVD:
         """
         Learn a discriminative dictionary from labelled training data.
 
@@ -290,10 +210,6 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             ``checkpoint_dir``, training resumes from it. If False, any
             existing checkpoint in ``checkpoint_dir`` is ignored and
             overwritten.
-
-        Returns
-        -------
-        self
         """
         X = np.asarray(X, dtype=np.float32)
         H = np.asarray(H, dtype=np.float32)
@@ -317,7 +233,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             if resume and os.path.exists(checkpoint_path):
                 (
                     D, A, W, Q_loaded, self.errors_, start_iter,
-                ) = self._load_checkpoint(checkpoint_path, X, H)
+                ) = load_checkpoint(self, checkpoint_path, X, H)
                 if self.verbose:
                     print(
                         f"Resuming from checkpoint at outer iteration "
@@ -354,15 +270,12 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
         use_classifier_term = (self.variant == "lcksvd2")
 
-        # ---- Build augmented training data ----
+        # Build augmented training data #
         # Y_aug = [X ; sqrt_alpha*Q ; sqrt_beta*H]  (LC-KSVD2)
         # Y_aug = [X ; sqrt_alpha*Q]                 (LC-KSVD1)
         H_aug = H if use_classifier_term else None
         X_aug, _, _ = _augment_data(X, Q, H_aug, sqrt_alpha, sqrt_beta)
 
-        # A single K-SVD instance, reused every outer iteration. Only
-        # D_init changes between calls (n_iter=1 each time), so the atom
-        # update / incoherence-clearing logic lives in exactly one place.
         atom_updater = KSVD(
             n_components=self.n_components,
             n_nonzero_coefs=self.n_nonzero_coefs,
@@ -377,14 +290,12 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         Gamma = None
         for it in tqdm(range(start_iter, self.n_iter), desc="LC-KSVD iterations"):
 
-            # ---- Build augmented dictionary ----
-            # D_aug = [D ; sqrt_alpha*A ; sqrt_beta*W]
+            # Build augmented dictionary #
             D_aug = self._build_aug_dict(D, A, W, sqrt_alpha, sqrt_beta, use_classifier_term)
             D_aug_norm = normalize_columns(D_aug)
             del D_aug
 
-            # ---- Sparse code + single atom-update pass on the augmented
-            #      system, delegated to KSVD ----
+            # Sparse code + single atom-update pass on the augmented system
             atom_updater.fit(X_aug, D_init=D_aug_norm, checkpoint_dir=None)
             del D_aug_norm
             D_aug_updated = atom_updater.D_
@@ -399,7 +310,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             del D_aug_updated
             D = normalize_columns(D)
 
-            # ---- Track RMSE on original X ----
+            # Track RMSE on original X
             err = np.float32(np.sqrt(rep_error_squared(X, D, Gamma).sum() / X.size))
             self.errors_.append(err)
 
@@ -407,8 +318,8 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
                 print(f"[{self.variant.upper()}] Iter {it + 1}/{self.n_iter}  RMSE={err:.6f}")
 
             if checkpoint_path is not None:
-                self._save_checkpoint(
-                    checkpoint_path, X, H, D, A, W, Q, it + 1
+                save_checkpoint(
+                    self, checkpoint_path, X, H, D, A, W, Q, it + 1
                 )
 
         self.D_ = D
@@ -418,8 +329,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         # ---- Classifier ----
         if self.variant == "lcksvd1":
             # Paper Sec. 3.2: LC-KSVD1's classifier is trained separately,
-            # after D, A, X are computed — never jointly with the
-            # dictionary. Re-encode with the final, converged D.
+            # after D, A, X are computed. Re-encode with the final, converged D.
             clf = self.classifier if self.classifier is not None else RidgeClassifier(
                 lambda1=self.lambda1
             )
@@ -427,8 +337,7 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
             clf.fit(Gamma_final, H)
             self.classifier_ = clf
             # Mirror a linear W_ for convenience/back-compat when the
-            # fitted classifier exposes one (e.g. the default
-            # RidgeClassifier); None for classifiers that don't.
+            # fitted classifier exposes one. None for classifiers that don't.
             self.W_ = getattr(clf, "W_", None)
         else:
             self.W_ = W
@@ -445,142 +354,10 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
 
         return self
 
-    # ------------------------------------------------------------------
-    # Checkpointing (outer LC-KSVD loop)
-    # ------------------------------------------------------------------
-
-    def _save_checkpoint(
-        self,
-        path: str,
-        X: np.ndarray,
-        H: np.ndarray,
-        D: np.ndarray,
-        A: np.ndarray,
-        W: np.ndarray,
-        Q: np.ndarray,
-        completed_iter: int,
-    ) -> None:
-        """
-        Atomically write the outer LC-KSVD training state to ``path``.
-
-        Written to a temp file in the same directory first, then moved
-        into place with os.replace, so an abrupt stop mid-write can never
-        leave a corrupt/truncated checkpoint at ``path``.
-        """
-        directory = os.path.dirname(path) or "."
-        fd, tmp_path = tempfile.mkstemp(
-            dir=directory, prefix=".lc_ksvd_checkpoint_", suffix=".npz.tmp"
-        )
-        try:
-            # See KSVD._save_checkpoint: np.savez silently appends '.npz'
-            # to string paths not already ending in exactly that
-            # extension, which would orphan the real data under a
-            # mangled filename and leave an empty file at `path` after
-            # os.replace. Writing through the fd avoids that entirely.
-            with os.fdopen(fd, "wb") as f:
-                np.savez(
-                    f,
-                    D=D,
-                    A=A,
-                    W=W,
-                    Q=Q,
-                    errors_=np.asarray(self.errors_, dtype=np.float32),
-                    completed_iter=completed_iter,
-                    n_iter=self.n_iter,
-                    n_components=self.n_components,
-                    n_nonzero_coefs=self.n_nonzero_coefs,
-                    alpha=self.alpha,
-                    beta=self.beta,
-                    variant=self.variant,
-                    n_features=X.shape[0],
-                    n_samples=X.shape[1],
-                    n_classes=H.shape[0],
-                )
-            os.replace(tmp_path, path)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-    def _load_checkpoint(self, path: str, X: np.ndarray, H: np.ndarray):
-        """
-        Load and validate a checkpoint against the current config, X, and H.
-
-        Raises DictionaryLearningError on any mismatch, rather than
-        silently resuming with an incompatible state.
-        """
-        with np.load(path, allow_pickle=True) as data:
-            n_features = int(data["n_features"])
-            n_samples = int(data["n_samples"])
-            n_classes = int(data["n_classes"])
-            n_components = int(data["n_components"])
-            n_nonzero_coefs = int(data["n_nonzero_coefs"])
-            n_iter = int(data["n_iter"])
-            alpha = np.float32(data["alpha"])
-            beta = np.float32(data["beta"])
-            variant = str(data["variant"])
-            completed_iter = int(data["completed_iter"])
-
-            if (n_features, n_samples) != X.shape:
-                raise DictionaryLearningError(
-                    f"Checkpoint at {path} was computed on data of shape "
-                    f"{(n_features, n_samples)}, but X has shape {X.shape}."
-                )
-            if n_classes != H.shape[0]:
-                raise DictionaryLearningError(
-                    f"Checkpoint n_classes={n_classes} does not match "
-                    f"H.shape[0]={H.shape[0]}."
-                )
-            if n_components != self.n_components:
-                raise DictionaryLearningError(
-                    f"Checkpoint n_components={n_components} does not match "
-                    f"LCKSVD.n_components={self.n_components}."
-                )
-            if n_nonzero_coefs != self.n_nonzero_coefs:
-                raise DictionaryLearningError(
-                    f"Checkpoint n_nonzero_coefs={n_nonzero_coefs} does not "
-                    f"match LCKSVD.n_nonzero_coefs={self.n_nonzero_coefs}."
-                )
-            if variant != self.variant:
-                raise DictionaryLearningError(
-                    f"Checkpoint was created with variant='{variant}', but "
-                    f"this LCKSVD instance has variant='{self.variant}'."
-                )
-            if not np.isclose(alpha, self.alpha) or not np.isclose(beta, self.beta):
-                raise DictionaryLearningError(
-                    f"Checkpoint was created with alpha={alpha}, beta={beta}, "
-                    f"but this LCKSVD instance has alpha={self.alpha}, "
-                    f"beta={self.beta}."
-                )
-            if n_iter != self.n_iter:
-                raise DictionaryLearningError(
-                    f"Checkpoint was created with n_iter={n_iter}, but this "
-                    f"LCKSVD instance has n_iter={self.n_iter}."
-                )
-            if completed_iter >= self.n_iter:
-                raise DictionaryLearningError(
-                    f"Checkpoint at {path} already completed all "
-                    f"{self.n_iter} outer iterations; nothing to resume."
-                )
-
-            D = data["D"].copy()
-            A = data["A"].copy()
-            W = data["W"].copy()
-            Q = data["Q"].copy()
-            errors_ = list(data["errors_"])
-
-        return D, A, W, Q, errors_, completed_iter
 
     def transform(self, X: np.ndarray) -> np.ndarray:
         """
         Encode X using the learned dictionary D.
-
-        Parameters
-        ----------
-        X : np.ndarray, shape (n_features, n_samples)
-
-        Returns
-        -------
-        Gamma : np.ndarray, shape (n_components, n_samples)
         """
         self._check_fitted()
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
@@ -593,14 +370,6 @@ class LCKSVD(BaseDiscriminativeDictionaryLearner):
         For LC-KSVD2, this is the argmax of ``W_ @ gamma``. For LC-KSVD1,
         this delegates to the fitted ``classifier_`` (default
         ``RidgeClassifier``, or a user-supplied ``classifier``).
-
-        Parameters
-        ----------
-        X : np.ndarray, shape (n_features, n_samples)
-
-        Returns
-        -------
-        labels : np.ndarray, shape (n_samples,)  integer class indices
         """
         self._check_fitted()
         Gamma = self.transform(X)

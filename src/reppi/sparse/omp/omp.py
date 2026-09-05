@@ -8,12 +8,13 @@ Implements Batch-OMP as described in:
 
 from __future__ import annotations
 
-import numpy as np
 import logging
 
+import numpy as np
+
 from reppi.base import BaseSparseCoder
+from reppi.sparse.omp.utils import batch_omp, omp_cholesky
 from reppi.sparse.utils import _check_dict_normalized
-from reppi.sparse.omp.utils import omp_cholesky, batch_omp
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +58,6 @@ class OMP(BaseSparseCoder):
     ) -> np.ndarray:
         """
         Compute sparse codes for each column of X.
-
-        Parameters
-        ----------
-        X : np.ndarray, shape (n_features, n_samples)
-        D : np.ndarray, shape (n_features, n_atoms)
-        G : np.ndarray or None, shape (n_atoms, n_atoms)
-            Precomputed Gram matrix D.T @ D.  Required for 'batch' mode;
-            computed internally if not supplied.
-
-        Returns
-        -------
-        Gamma : np.ndarray, shape (n_atoms, n_samples)
         """
         X = np.asarray(X, dtype=np.float32)
         D = np.asarray(D, dtype=np.float32)

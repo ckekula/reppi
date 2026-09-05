@@ -1,7 +1,8 @@
-import numpy as np
 import logging
-from tqdm import tqdm
+
+import numpy as np
 from scipy import linalg
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -14,21 +15,7 @@ def omp_cholesky(
     n_nonzero: int,
 ) -> np.ndarray:
     """
-    Single-signal OMP via Cholesky updates (OMP-Cholesky).
-
-    Parameters
-    ----------
-    D : np.ndarray, shape (n_features, n_atoms)
-        Normalized dictionary.
-    x : np.ndarray, shape (n_features,)
-        Single input signal.
-    n_nonzero : int
-        Maximum number of non-zero coefficients (sparsity).
-
-    Returns
-    -------
-    gamma : np.ndarray, shape (n_atoms,)
-        Sparse representation of x.
+    Single-signal OMP via Cholesky updates.
     """
     n_atoms = D.shape[1]
     residual = x.copy().astype(np.float64)
@@ -84,21 +71,7 @@ def batch_omp(
     n_nonzero: int,
 ) -> np.ndarray:
     """
-    Batch OMP — fastest variant; requires precomputed G = D'D and DtX = D'X.
-
-    Parameters
-    ----------
-    DtX : np.ndarray, shape (n_atoms, n_samples)
-        Precomputed projections D.T @ X.
-    G : np.ndarray, shape (n_atoms, n_atoms)
-        Precomputed Gram matrix D.T @ D.
-    n_nonzero : int
-        Sparsity level.
-
-    Returns
-    -------
-    Gamma : np.ndarray, shape (n_atoms, n_samples)
-        Sparse representations (dense).
+    Batch OMP — fastest variant.
     """
     n_atoms, n_samples = DtX.shape
     Gamma = np.zeros((n_atoms, n_samples), dtype=np.float32)

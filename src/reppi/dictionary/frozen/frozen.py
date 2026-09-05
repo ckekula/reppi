@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import os
-import numpy as np
 import logging
+import os
+
+import numpy as np
 
 from reppi.base import BaseDictionaryLearner
-from reppi.exceptions import DictionaryLearningError
-
-from reppi.dictionary.frozen.utils import _completed_ksvd_checkpoint
 from reppi.dictionary.frozen.residual_learner import FrozenDictionaryLearner
+from reppi.dictionary.frozen.utils import _completed_ksvd_checkpoint
+from reppi.exceptions import DictionaryLearningError
 
 logger = logging.getLogger(__name__)
 
@@ -18,18 +18,10 @@ class IncrementalFrozenDictionary:
     Incrementally learn class-specific residual dictionaries, freezing all
     previously learned atoms before training the next class.
 
-    Faithful to Carroll et al. 2017 ("Outlier Learning via Augmented
-    Frozen Dictionaries"): the underlying dictionary learner
+    The underlying dictionary learner
     (``base_learner_class`` / ``residual_learner_class``, e.g. ``KSVD``)
-    is unsupervised — it never sees class labels, only the training
-    signals for whichever single class is currently being added. This
-    class handles only that unsupervised, incremental dictionary-learning
-    pipeline and its per-class bookkeeping (``class_boundaries_``).
-
-    Classification is intentionally out of scope here, matching the
-    paper: dictionary learning and classification are two fully separate
-    stages there (Sec. IV-B), with an SVM trained afterwards on sparse
-    codes from the *finished, frozen* dictionary.
+    is unsupervised. This class handles only that unsupervised,
+    incremental dictionary-learning pipeline and its per-class bookkeeping (``class_boundaries_``).
 
     Pipeline
     --------
@@ -42,9 +34,7 @@ class IncrementalFrozenDictionary:
        Learn a residual dictionary D_a for the new class on top of
        the currently frozen dictionary [ D_n | D_a_1 | … ], via
        ``FrozenDictionaryLearner``. The underlying learner trains its new
-       atoms jointly alongside the frozen ones every iteration (not on a
-       one-shot residual — see ``BaseDictionaryLearner``'s frozen-
-       dictionary contract and Carroll et al. 2017, Sec. III).
+       atoms jointly alongside the frozen ones every iteration.
 
     The end product of this pipeline is ``D_``, the full combined
     dictionary. Sparse coding and classification on top of it happen
@@ -55,15 +45,9 @@ class IncrementalFrozenDictionary:
     Each call to ``fit_base`` or ``add_class`` represents one *stage* of
     the incremental pipeline, and each stage trains its own, differently
     shaped, inner dictionary-learner instance. If a ``checkpoint_dir`` is
-    given, this class therefore does NOT hand every stage the same path —
-    doing so would cause the second stage's checkpoint load to fail (or,
-    worse, be silently wrong) since its X shape differs from the first
-    stage's. Instead, each stage gets its own subdirectory:
-
-        <checkpoint_dir>/base/           (fit_base)
-        <checkpoint_dir>/class_<label>/  (add_class, per class_label)
-
-    so that interrupting and resuming an individual stage's training does
+    given, this class therefore does NOT hand every stage the same path.
+    Instead, each stage gets its own subdirectory, so that interrupting
+    and resuming an individual stage's training does
     not collide with any other stage's saved state.
 
     Parameters
@@ -127,17 +111,13 @@ class IncrementalFrozenDictionary:
         self.stage_learners_: list = []
         self.errors_: dict[int, list[float]] = {}
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def fit_base(
         self,
         X: np.ndarray,
         class_label: int = 0,
         checkpoint_dir: str | None = None,
         resume: bool = True,
-    ) -> "IncrementalFrozenDictionary":
+    ) -> IncrementalFrozenDictionary:
         """
         Learn the base dictionary from normal / background data.
 
@@ -156,10 +136,6 @@ class IncrementalFrozenDictionary:
         resume : bool
             Forwarded to the base learner's ``fit()`` alongside the
             ``base`` checkpoint subdirectory. Default True.
-
-        Returns
-        -------
-        self
         """
         X = np.asarray(X, dtype=np.float32)
 
@@ -216,7 +192,7 @@ class IncrementalFrozenDictionary:
         learner_kwargs_override: dict | None = None,
         checkpoint_dir: str | None = None,
         resume: bool = True,
-    ) -> "IncrementalFrozenDictionary":
+    ) -> IncrementalFrozenDictionary:
         """
         Learn a residual dictionary for a new class and extend D_.
 
@@ -243,10 +219,6 @@ class IncrementalFrozenDictionary:
         resume : bool
             Forwarded down to the residual learner's ``fit()`` alongside
             the per-class checkpoint subdirectory. Default True.
-
-        Returns
-        -------
-        self
         """
         if self.D_ is None:
             raise DictionaryLearningError(

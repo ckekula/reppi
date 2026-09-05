@@ -1,34 +1,17 @@
 """
 K-SVD dictionary learning.
-
-Implements the K-SVD algorithm described in:
-    Aharon, Elad, Bruckstein. "The K-SVD: An Algorithm for Designing
-    Overcomplete Dictionaries for Sparse Representation".
-    IEEE Trans. Signal Processing, 54(11), 2006.
-
-Batch-OMP integration follows:
-    Elad, Rubinstein, Zibulevsky. "Efficient Implementation of the K-SVD
-    Algorithm using Batch Orthogonal Matching Pursuit". Technion TR, 2008.
-
-Frozen-atom support (``D_frozen``) implements "Frozen K-SVD" as described
-in:
-    Carroll, Whitaker, Dayley, Anderson. "Outlier Learning via Augmented
-    Frozen Dictionaries". IEEE/ACM TASLP, 25(6), 2017, Sec. III-A: the
-    atom-update loop (Algorithm 1, line 3) is restricted to non-frozen
-    columns; everything else — sparse coding, error computation — still
-    operates over the full, joint dictionary every iteration.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import tempfile
 
 import numpy as np
 from tqdm import tqdm
 
 from reppi.base import BaseDictionaryLearner
+from reppi.dictionary.ksvd.checkpoint import load_checkpoint, save_checkpoint
 from reppi.dictionary.ksvd.utils import _clear_dict, _optimize_atom
 from reppi.exceptions import DictionaryLearningError
 from reppi.sparse.omp.omp import OMP
@@ -118,9 +101,6 @@ class KSVD(BaseDictionaryLearner):
         self.Gamma_: np.ndarray | None = None
         self.errors_: list[float] = []
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def fit(
         self,
@@ -201,7 +181,7 @@ class KSVD(BaseDictionaryLearner):
                     replaced,
                     self.errors_,
                     start_iter,
-                ) = self._load_checkpoint(checkpoint_path, X, n_frozen, D_frozen)
+                ) = load_checkpoint(self, checkpoint_path, X, n_frozen, D_frozen)
                 if self.verbose:
                     logger.info(
                         f"Resuming from checkpoint at iteration {start_iter}/"
@@ -263,10 +243,10 @@ class KSVD(BaseDictionaryLearner):
             D, _ = _clear_dict(
                 D, Gamma, X, R, self.mu_thresh, unused, replaced, frozen_atoms=n_frozen
             )
-
+            
             if checkpoint_path is not None:
-                self._save_checkpoint(
-                    checkpoint_path, X, D, Gamma, unused, replaced, it + 1, n_frozen
+                save_checkpoint(
+                    self, checkpoint_path, X, D, Gamma, unused, replaced, it + 1, n_frozen
                 )
 
         self.D_ = D
@@ -281,9 +261,6 @@ class KSVD(BaseDictionaryLearner):
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, self.D_)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _init_dict(
         self,
@@ -350,6 +327,7 @@ class KSVD(BaseDictionaryLearner):
         D = X[:, candidates[chosen_idx]].copy()
         return normalize_columns(D)
 
+
     def _sparse_code(
         self,
         X: np.ndarray,
@@ -360,125 +338,3 @@ class KSVD(BaseDictionaryLearner):
         logger.info("Sparse coding %d signals with dictionary of shape %s", X.shape[1], D.shape)
         coder = OMP(self.n_nonzero_coefs, mode="batch", check_dict=False)
         return coder.encode(X, D, G=G, DtX=DtX)
-
-    # ------------------------------------------------------------------
-    # Checkpointing
-    # ------------------------------------------------------------------
-
-    def _save_checkpoint(
-        self,
-        path: str,
-        X: np.ndarray,
-        D: np.ndarray,
-        Gamma: np.ndarray,
-        unused: np.ndarray,
-        replaced: np.ndarray,
-        completed_iter: int,
-        n_frozen: int,
-    ) -> None:
-        """
-        Atomically write the training state to ``path``.
-
-        Written to a temp file in the same directory first, then moved
-        into place with os.replace, so an abrupt stop mid-write can never
-        leave a corrupt/truncated checkpoint at ``path``.
-        """
-        directory = os.path.dirname(path) or "."
-        fd, tmp_path = tempfile.mkstemp(
-            dir=directory, prefix=".ksvd_checkpoint_", suffix=".npz.tmp"
-        )
-        try:
-            # Pass the open file descriptor to np.savez: given a string,
-            # np.savez silently appends '.npz' if
-            # the name doesn't already end with exactly that extension
-            with os.fdopen(fd, "wb") as f:
-                np.savez(
-                    f,
-                    D=D,
-                    Gamma=Gamma,
-                    unused=unused,
-                    replaced=replaced,
-                    errors_=np.asarray(self.errors_, dtype=np.float32),
-                    completed_iter=completed_iter,
-                    n_iter=self.n_iter,
-                    n_components=self.n_components,
-                    n_nonzero_coefs=self.n_nonzero_coefs,
-                    n_features=X.shape[0],
-                    n_samples=X.shape[1],
-                    n_frozen=n_frozen,
-                )
-            os.replace(tmp_path, path)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-    def _load_checkpoint(
-        self,
-        path: str,
-        X: np.ndarray,
-        n_frozen: int,
-        D_frozen: np.ndarray | None,
-    ):
-        """
-        Load and validate a checkpoint against the current config, X, and
-        the frozen-dictionary configuration for this call.
-
-        Raises DictionaryLearningError on any mismatch, rather than
-        silently resuming with an incompatible state.
-        """
-        with np.load(path) as data:
-            n_features = int(data["n_features"])
-            n_samples = int(data["n_samples"])
-            n_components = int(data["n_components"])
-            n_nonzero_coefs = int(data["n_nonzero_coefs"])
-            n_iter = int(data["n_iter"])
-            completed_iter = int(data["completed_iter"])
-            n_frozen_ckpt = int(data["n_frozen"]) if "n_frozen" in data else 0
-
-            if (n_features, n_samples) != X.shape:
-                raise DictionaryLearningError(
-                    f"Checkpoint at {path} was computed on data of shape "
-                    f"{(n_features, n_samples)}, but X has shape {X.shape}."
-                )
-            if n_components != self.n_components:
-                raise DictionaryLearningError(
-                    f"Checkpoint n_components={n_components} does not match "
-                    f"KSVD.n_components={self.n_components}."
-                )
-            if n_nonzero_coefs != self.n_nonzero_coefs:
-                raise DictionaryLearningError(
-                    f"Checkpoint n_nonzero_coefs={n_nonzero_coefs} does not "
-                    f"match KSVD.n_nonzero_coefs={self.n_nonzero_coefs}."
-                )
-            if n_iter != self.n_iter:
-                raise DictionaryLearningError(
-                    f"Checkpoint was created with n_iter={n_iter}, but this "
-                    f"KSVD instance has n_iter={self.n_iter}."
-                )
-            if n_frozen_ckpt != n_frozen:
-                raise DictionaryLearningError(
-                    f"Checkpoint at {path} was trained with {n_frozen_ckpt} "
-                    f"frozen atoms, but this fit() call has n_frozen={n_frozen}."
-                )
-
-            D = data["D"].copy()
-            Gamma = data["Gamma"].copy()
-            unused = data["unused"].copy()
-            replaced = data["replaced"].copy()
-            errors_ = list(data["errors_"])
-
-        if n_frozen > 0:
-            if D_frozen is None:
-                raise DictionaryLearningError(
-                    f"Checkpoint at {path} expects {n_frozen} frozen atoms, "
-                    "but D_frozen=None was passed to this fit() call."
-                )
-            if not np.allclose(D[:, :n_frozen], D_frozen, atol=1e-6):
-                raise DictionaryLearningError(
-                    f"Checkpoint at {path}'s frozen atoms do not match the "
-                    "D_frozen passed to this fit() call. Resuming would "
-                    "silently mix training states from different frozen "
-                    "dictionaries."
-                )
-
-        return D, Gamma, unused, replaced, errors_, completed_iter

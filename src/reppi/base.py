@@ -69,7 +69,7 @@ class BaseDictionaryLearner(ABC):
         D_frozen: np.ndarray | None = None,
         checkpoint_dir: str | None = None,
         resume: bool = True,
-    ) -> "BaseDictionaryLearner":
+    ) -> BaseDictionaryLearner:
         """
         Learn a dictionary from training data.
 
@@ -159,7 +159,7 @@ class BaseDiscriminativeDictionaryLearner(BaseDictionaryLearner):
         self,
         X: np.ndarray,
         H: np.ndarray,
-    ) -> "BaseDiscriminativeDictionaryLearner":
+    ) -> BaseDiscriminativeDictionaryLearner:
         """
         Learn a discriminative dictionary from labelled training data.
 

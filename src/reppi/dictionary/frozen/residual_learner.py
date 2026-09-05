@@ -12,16 +12,9 @@ class FrozenDictionaryLearner:
     Learn a residual dictionary given a frozen dictionary D_frozen, using
     any unsupervised ``BaseDictionaryLearner`` that supports the frozen-
     dictionary contract (``D_frozen`` / ``checkpoint_dir`` / ``resume`` on
-    ``fit()``, and a ``D_`` attribute afterward) — e.g. ``KSVD``. This
-    directly implements "Frozen K-SVD" (Carroll et al. 2017, Sec. III-A):
-    the wrapped learner jointly sparse-codes over ``[D_frozen | D_active]``
+    ``fit()``, and a ``D_`` attribute afterward) — e.g. ``KSVD``.
+    The wrapped learner jointly sparse-codes over ``[D_frozen | D_active]``
     every iteration and only ever updates the new atoms.
-
-    The wrapped learner is unsupervised — it never sees class labels.
-    Per-class atom bookkeeping (``class_boundaries_``) is therefore
-    computed directly by this wrapper from the given ``class_label`` and
-    the number of new atoms the learner produced, rather than being
-    reported by the learner itself.
 
     For the full sequential pipeline, see ``IncrementalFrozenDictionary``.
 
@@ -73,10 +66,6 @@ class FrozenDictionaryLearner:
         self.n_active_: int = 0
         self.class_boundaries_: dict[int, tuple[int, int]] | None = None
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def fit(
         self,
         X: np.ndarray,
@@ -105,10 +94,6 @@ class FrozenDictionaryLearner:
         resume : bool
             Forwarded to the inner learner's ``fit()`` alongside
             ``checkpoint_dir``. Default True.
-
-        Returns
-        -------
-        self
         """
         X = np.asarray(X, dtype=np.float32)
 

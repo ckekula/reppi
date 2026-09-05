@@ -26,27 +26,11 @@ def _completed_ksvd_checkpoint(
 ) -> tuple[np.ndarray, np.ndarray, list[float]] | None:
     """
     Check whether ``<checkpoint_dir>/ksvd_checkpoint.npz`` already holds a
-    *fully completed* fit for this exact configuration, and if so, return
-    ``(D, Gamma, errors_)`` loaded from it.
-
-    Returns None if the checkpoint doesn't exist, isn't yet complete, or
-    isn't in a recognizable KSVD checkpoint format — in every one of
-    those cases the caller should fall through to a normal
-    ``learner.fit(..., resume=True)`` call, which will train from scratch
-    or resume mid-training as usual.
-
-    Raises DictionaryLearningError if a *complete* checkpoint exists but
-    doesn't match this call's configuration (shape, n_components,
-    n_nonzero_coefs, n_iter, or frozen atoms) — this mirrors
-    ``KSVD._load_checkpoint``'s own validation, since this helper
-    bypasses ``KSVD.fit()`` entirely for the skip case and so must
-    replicate its safety checks itself.
+    *fully completed* fit for this exact configuration.
     """
     if checkpoint_dir is None:
         return None
     if n_components is None or n_nonzero_coefs is None or n_iter is None:
-        # Config this learner uses doesn't expose the fields we need to
-        # validate a checkpoint against -- optimization doesn't apply.
         return None
 
     path = os.path.join(checkpoint_dir, _KSVD_CHECKPOINT_FILENAME)
@@ -86,8 +70,6 @@ def _completed_ksvd_checkpoint(
                 )
 
             if completed_iter < n_iter:
-                # Exists and matches, but isn't finished -- let the
-                # normal (resuming) fit() path handle it.
                 return None
 
             if n_frozen_ckpt != n_frozen:
@@ -101,8 +83,6 @@ def _completed_ksvd_checkpoint(
             Gamma = data["Gamma"].copy()
             errors_ = list(data["errors_"])
     except KeyError:
-        # Not a recognizable KSVD checkpoint -- don't guess, just skip
-        # the optimization and let the normal fit() path deal with it.
         return None
 
     if n_frozen > 0:

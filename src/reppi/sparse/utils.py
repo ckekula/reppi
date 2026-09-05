@@ -21,17 +21,7 @@ def normalize_columns(D: np.ndarray) -> np.ndarray:
 
 
 def col_norms_squared(X: np.ndarray, block_size: int = 2000) -> np.ndarray:
-    """Compute squared L2-norm of each column of X in blocks (memory-safe).
-
-    Parameters
-    ----------
-    X : np.ndarray, shape (n_features, n_samples)
-    block_size : int
-        Number of columns to process at a time.
-
-    Returns
-    -------
-    norms2 : np.ndarray, shape (n_samples,)
+    """Compute squared L2-norm of each column of X in blocks.
     """
     n_samples = X.shape[1]
     norms2 = np.zeros(n_samples, dtype=np.float32)
@@ -48,17 +38,6 @@ def rep_error_squared(
     block_size: int = 2000,
 ) -> np.ndarray:
     """Per-signal squared reconstruction error |x_i - D gamma_i|^2.
-
-    Parameters
-    ----------
-    X : np.ndarray, shape (n_features, n_samples)
-    D : np.ndarray, shape (n_features, n_atoms)
-    Gamma : np.ndarray, shape (n_atoms, n_samples)
-    block_size : int
-
-    Returns
-    -------
-    err2 : np.ndarray, shape (n_samples,)
     """
     n_samples = X.shape[1]
     err2 = np.zeros(n_samples, dtype=np.float32)
