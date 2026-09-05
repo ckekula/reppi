@@ -1,12 +1,13 @@
 [project]
 name = "reppi"
-version = "0.1.59"
+version = "1.0.0"
 readme = "README.md"
 description = "A modular Python toolkit for sparse representation-based learning/classification algorithms"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.4.4",
     "scipy>=1.17.1",
+    "torch>=2.14.0",
     "tqdm>=4.68.4",
 ]
 
@@ -22,3 +23,8 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pdoc>=16.0.0",
+]

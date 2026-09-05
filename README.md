@@ -26,12 +26,6 @@ reppi follows the **column-major convention** common in the sparse representatio
 
 ## Quick Start
 
-### Installaion
-
-```bash
-pip install reppi
-```
-
 ### Sparse Coding with OMP
 
 ```python
